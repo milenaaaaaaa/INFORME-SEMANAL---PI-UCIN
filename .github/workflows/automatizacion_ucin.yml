@@ -1,0 +1,40 @@
+name: Generar Informe Semanal UCIN
+
+# Cuándo se ejecuta
+on:
+  schedule:
+    # GitHub usa hora UTC. Para que corra a las 23:59 del domingo en Córdoba (UTC-3), 
+    # lo programamos para las 02:59 UTC del lunes.
+    - cron: '59 2 * * 1'
+  
+  # Habilita un botón para que puedas ejecutarlo a mano cuando quieras probarlo
+  workflow_dispatch:
+
+# Qué tiene que hacer
+jobs:
+  generar-y-enviar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar dependencias del sistema operativo (Requisito de Weasyprint)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pango1.0-tools libpango-1.0-0 libpangocairo-1.0-0
+
+      - name: Instalar librerías de Python
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar script y enviar PDF por correo
+        env:
+          # Inyección segura de tus secretos
+          INFLUX_TOKEN: ${{ secrets.INFLUX_TOKEN }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        run: python informe.py
