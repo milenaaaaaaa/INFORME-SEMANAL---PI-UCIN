@@ -25,8 +25,8 @@ INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD") 
 
 # Correos
-EMAIL_SENDER = "tu_correo@gmail.com" # CAMBIA ESTO por tu dirección de Gmail
-EMAIL_RECEIVER = "neonatologia@hospital.com" # CAMBIA ESTO por el correo del destinatario
+EMAIL_SENDER = "monitoreoambienteucin@gmail.com" 
+EMAIL_RECEIVER = "monitoreoambienteucin@gmail.com" 
 
 # ==========================================
 # FUNCIONES AUXILIARES
@@ -256,19 +256,22 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
 
     <h2>3. Referencias Ambientales (Normativas y Parámetros)</h2>
     <h3>Marco de Referencia Acústico</h3>
-    <ul class="normativas">
-        <li><strong>Organización Mundial de la Salud (OMS):</strong> El nivel sonoro equivalente ponderado es de 30 dBA y el nivel sonoro máximo es de 40 dBA.</li>
-        <li><strong>Academia Americana de Pediatría (AAP):</strong> El nivel sonoro equivalente ponderado no debe superar los 45 dBA. Los niveles de ruido ambiental no pueden exceder los 50 dB(A) durante más del 10% del tiempo total de evaluación. Los picos máximos (Lmax) deben mantenerse estrictamente por debajo de los 65 dB(A).</li>
-    </ul>
+    <table class="data-table" style="width: 70%; margin: 0 auto;">
+        <tr><th>Ente</th><th>Valor Esperado</th></tr>
+        <tr><td>OMS</td><td>~ Nivel Sonoro Equivalente Ponderado (LAeq): 30 dBA</td></tr>
+        <tr><td>OMS</td><td>~ Nivel Sonoro Máximo (Lmax): 40 dBA</td></tr>
+        <tr><td>AAP</td><td>~ Nivel Sonoro Equivalente Ponderado (LAeq): 45 dBA</td></tr>
+        <tr><td>AAP</td><td>~ Nivel Sonoro Máximo (Lmax): 65 dBA</td></tr>
+    </table>
 
     <h3>Marco de Referencia Lumínico</h3>
     <p style="font-size: 9.5pt; color: #7f8c8d; margin-top: 0;">Valores teóricos esperados para el control del ciclo circadiano del neonato en la sala.</p>
     <table class="data-table" style="width: 70%; margin: 0 auto;">
         <tr><th>Condición de la Sala</th><th>Valor de Referencia Esperado</th></tr>
-        <tr><td>Todo apagado</td><td>~ 200 lux</td></tr>
-        <tr><td>Luz artificial</td><td>~ 800 lux</td></tr>
-        <tr><td>Luz de ventanal</td><td>~ 1000 lux</td></tr>
-        <tr><td>Luz artificial + Luz de ventanal</td><td>~ 1800 lux</td></tr>
+        <tr><td>Todo apagado</td><td>~ XXX lux</td></tr>
+        <tr><td>Luz artificial</td><td>~ XXX lux</td></tr>
+        <tr><td>Luz del ventanal</td><td>~ XXX lux</td></tr>
+        <tr><td>Luz artificial + Luz de ventanal</td><td>~ XXX lux</td></tr>
     </table>
 
     <h2>4. Análisis Detallado Diario (Ruido y Luz)</h2>
