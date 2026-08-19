@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('Agg') # Fundamental para que las gráficas funcionen en servidores sin pantalla como GitHub Actions
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import base64
@@ -11,7 +11,6 @@ from weasyprint import HTML
 from influxdb_client import InfluxDBClient
 import smtplib
 from email.message import EmailMessage
-from datetime import datetime, timedelta
 
 # ==========================================
 # 0. CONFIGURACIÓN DEL SISTEMA
@@ -20,23 +19,15 @@ INFLUX_URL = "https://us-east-1-1.aws.cloud2.influxdata.com"
 INFLUX_ORG = "7fc68e2daf710d5f"
 INFLUX_BUCKET = "datalogger"
 
-# Extracción segura de credenciales desde GitHub Secrets
 INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN") 
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD") 
 
-# Correos
 EMAIL_SENDER = "monitoreoambienteucin@gmail.com" 
 EMAIL_RECEIVER = "monitoreoambienteucin@gmail.com" 
 
 # ==========================================
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES GRÁFICAS Y DATOS
 # ==========================================
-def fig_to_base64(fig):
-    buf = BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight', dpi=120)
-    plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode('utf-8')
-
 def get_image_base64(filepath):
     try:
         with open(filepath, "rb") as f:
@@ -44,15 +35,73 @@ def get_image_base64(filepath):
     except FileNotFoundError:
         return ""
 
+def generar_grafico_base64(df_periodo, titulo, color_ruido='#c0392b'):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 3.5), sharex=True)
+    fig.subplots_adjust(hspace=0.2)
+    
+    tiempos = df_periodo.index
+    ruido = df_periodo['ruido_dba'].values
+    luz = df_periodo['luz_lux'].values
+    
+    # Gráfico de Ruido
+    if len(ruido) > 0:
+        ax1.plot(tiempos, ruido, color=color_ruido, linewidth=1.2)
+        ax1.axhline(45, color='#e74c3c', linestyle='--', linewidth=1, label='Límite (45 dBA)')
+        pico_max = np.nanmax(ruido) if not np.isnan(ruido).all() else 65
+        ax1.set_ylim(30, max(85, pico_max + 10))
+    ax1.set_ylabel('Ruido (dBA)', color=color_ruido, fontweight='bold')
+    ax1.tick_params(axis='y', labelcolor=color_ruido)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_title(titulo, fontweight='bold', fontsize=10, color='#2c3e50')
+    
+    # Gráfico de Luz
+    if len(luz) > 0:
+        ax2.plot(tiempos, luz, color='#f39c12', linewidth=1.2)
+        ax2.fill_between(tiempos, luz, color='#f39c12', alpha=0.2)
+    ax2.set_ylabel('Luz (Lux)', color='#d68910', fontweight='bold')
+    ax2.tick_params(axis='y', labelcolor='#d68910')
+    ax2.set_ylim(0, 1000) # Límite fijo a 1000 lux
+    ax2.grid(True, alpha=0.3)
+    
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    plt.xticks(rotation=0)
+    ax2.set_xlabel('Hora')
+    
+    buf = BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+def obtener_picos_sostenidos(df_dia):
+    """Detecta períodos donde el ruido supera 45 dBA por más de 3 minutos consecutivos"""
+    is_over = df_dia['ruido_dba'] > 45
+    consecutive_groups = is_over.ne(is_over.shift()).cumsum()
+    over_45_periods = df_dia[is_over].groupby(consecutive_groups)
+    
+    alertas_sostenidas = []
+    for _, period in over_45_periods:
+        if len(period) < 2: 
+            continue
+            
+        duracion = period.index[-1] - period.index[0]
+        minutos = int(duracion.total_seconds() // 60)
+        
+        if minutos >= 3:
+            max_val = period['ruido_dba'].max()
+            inicio = period.index[0].strftime("%H:%M")
+            fin = period.index[-1].strftime("%H:%M")
+            alertas_sostenidas.append(f"Pico de <strong>{max_val:.1f} dBA</strong> sostenido por {minutos} min ({inicio} a {fin})")
+            
+    return alertas_sostenidas
+
 # ==========================================
-# 1. EXTRACCIÓN DE DATOS (InfluxDB)
+# 1. EXTRACCIÓN DE DATOS
 # ==========================================
 def obtener_datos_influx():
     print("Conectando a InfluxDB Cloud...")
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     query_api = client.query_api()
 
-    # Traemos los últimos 7 días
     query = f'''
         from(bucket: "{INFLUX_BUCKET}")
         |> range(start: -7d)
@@ -65,12 +114,10 @@ def obtener_datos_influx():
     client.close()
     
     if not df.empty:
-        # Convertir a hora local para cortes precisos de día/noche
         df['_time'] = pd.to_datetime(df['_time']).dt.tz_convert('America/Argentina/Cordoba')
         df.set_index('_time', inplace=True)
         df = df.sort_index()
         
-        # Tomar el pico de ruido máximo entre el Nodo 1 y Nodo 2
         if 'node_1_laf_dba' in df.columns and 'node_2_laf_dba' in df.columns:
             df['ruido_dba'] = df[['node_1_laf_dba', 'node_2_laf_dba']].max(axis=1)
         elif 'node_1_laf_dba' in df.columns:
@@ -85,7 +132,7 @@ def obtener_datos_influx():
         else:
             df['luz_lux'] = np.nan
             
-        df.fillna(method='ffill', inplace=True) 
+        df.ffill(inplace=True) 
     
     return df
 
@@ -114,21 +161,21 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         h1 {{ color: #2c3e50; font-size: 16pt; text-align: center; margin: 0 0 5px 0; text-transform: uppercase; }}
         .metadata {{ text-align: center; font-size: 10pt; color: #7f8c8d; }}
         h2 {{ color: #2980b9; font-size: 14pt; border-bottom: 1px solid #bdc3c7; padding-bottom: 4px; margin-top: 25px; margin-bottom: 15px; page-break-after: avoid; }}
-        h3 {{ color: #34495e; font-size: 11pt; margin-top: 10px; margin-bottom: 5px; page-break-after: avoid; }}
         .status-panel {{ display: table; width: 100%; margin-bottom: 15px; }}
         .status-box {{ display: table-cell; padding: 15px; background-color: #fff8e1; border-left: 5px solid #f39c12; }}
         .status-box.ok {{ background-color: #e8fdf0; border-left: 5px solid #27ae60; }}
-        ul.alerts {{ margin: 5px 0 0 0; padding-left: 20px; color: #c0392b; font-weight: bold; }}
-        ul.normativas {{ margin: 5px 0 15px 0; padding-left: 20px; color: #34495e; font-size: 9.5pt; }}
+        ul.alerts {{ margin: 5px 0 0 0; padding-left: 20px; color: #c0392b; font-size: 9.5pt; }}
         table.data-table {{ width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 9.5pt; }}
         table.data-table th, table.data-table td {{ border: 1px solid #ecf0f1; padding: 8px; text-align: center; }}
         table.data-table th {{ background-color: #f4f7f6; color: #34495e; font-weight: bold; }}
         .day-block {{ page-break-inside: avoid; margin-bottom: 30px; background-color: #fafbfc; border: 1px solid #e1e4e8; padding: 15px; border-radius: 4px; }}
-        .day-title {{ font-size: 12pt; font-weight: bold; color: #2c3e50; margin-bottom: 10px; text-transform: uppercase; border-bottom: 2px solid #e74c3c; display: inline-block; padding-bottom: 2px; }}
+        .day-title {{ font-size: 12pt; font-weight: bold; color: #2c3e50; margin-bottom: 10px; text-transform: uppercase; border-bottom: 2px solid #2980b9; display: inline-block; padding-bottom: 2px; }}
         .metrics-container {{ display: table; width: 100%; margin-bottom: 15px; }}
         .metric-col {{ display: table-cell; width: 50%; padding-right: 10px; }}
         .metric-col:last-child {{ padding-right: 0; padding-left: 10px; border-left: 1px solid #ddd; }}
-        .plot-img {{ width: 100%; max-width: 100%; height: auto; display: block; margin: 0 auto; }}
+        .plot-img {{ width: 100%; max-width: 100%; height: auto; display: block; margin: 10px auto; }}
+        .sustained-peaks {{ background-color: #fce8e6; border-left: 3px solid #e74c3c; padding: 8px; margin-top: 10px; font-size: 9pt; }}
+        .sustained-peaks strong {{ color: #c0392b; }}
     </style>
     </head>
     <body>
@@ -145,10 +192,9 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
     """
     
     daily_blocks = []
-    alertas = []
+    alertas_generales = []
     total_ruido = []
     
-    # Mapeo de días al español
     dias_esp = {"Monday": "LUNES", "Tuesday": "MARTES", "Wednesday": "MIÉRCOLES", "Thursday": "JUEVES", "Friday": "VIERNES", "Saturday": "SÁBADO", "Sunday": "DOMINGO"}
     
     for date, group in df.groupby(df.index.date):
@@ -157,58 +203,48 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         day_name = dias_esp.get(date.strftime("%A"), "")
         date_str = date.strftime("%d/%m/%Y")
         
+        # Segmentación Diurna (08:00 a 20:00) y Nocturna (Resto)
         horas = group.index.hour
-        mask_day = (horas >= 7) & (horas < 22)
+        mask_day = (horas >= 8) & (horas < 20)
         mask_night = ~mask_day
+        
+        df_diurno = group[mask_day]
+        df_nocturno = group[mask_night]
         
         ruido = group['ruido_dba'].dropna().values
         luz = group['luz_lux'].dropna().values
-        tiempos = group.index
         
         if len(ruido) == 0 or len(luz) == 0: continue
             
-        r_diurno = ruido[mask_day].mean() if len(ruido[mask_day]) > 0 else 0
-        r_nocturno = ruido[mask_night].mean() if len(ruido[mask_night]) > 0 else 0
-        l_diurna = luz[mask_day].mean() if len(luz[mask_day]) > 0 else 0
-        l_nocturna = luz[mask_night].mean() if len(luz[mask_night]) > 0 else 0
+        r_diurno = df_diurno['ruido_dba'].mean() if not df_diurno.empty else 0
+        r_nocturno = df_nocturno['ruido_dba'].mean() if not df_nocturno.empty else 0
+        l_diurna = df_diurno['luz_lux'].mean() if not df_diurno.empty else 0
+        l_nocturna = df_nocturno['luz_lux'].mean() if not df_nocturno.empty else 0
         
         total_ruido.append(np.mean(ruido))
         
-        max_idx = np.argmax(ruido)
-        pico_max = ruido[max_idx]
-        hora_pico = tiempos[max_idx].strftime("%H:%M:%S")
+        # Búsqueda de picos sostenidos (>45 dBA por >3 min)
+        picos_dia = obtener_picos_sostenidos(group)
+        if picos_dia:
+            for p in picos_dia:
+                alertas_generales.append(f"<strong>{day_name} {date_str}:</strong> {p}")
         
         pct_fuera_norma = (np.sum(ruido > 45) / len(ruido)) * 100
         
-        if pico_max > 65:
-            alertas.append(f"{day_name} {date_str} a las {hora_pico}: Pico crítico de {pico_max:.1f} dBA.")
-
-        # Generar Gráficas
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 4), sharex=True)
-        fig.subplots_adjust(hspace=0.1)
+        # Generación de gráficos independientes
+        img_diurno = generar_grafico_base64(df_diurno, "Período Diurno (08:00 - 20:00)", "#2980b9")
+        img_nocturno = generar_grafico_base64(df_nocturno, "Período Nocturno (20:00 - 08:00)", "#2c3e50")
         
-        ax1.plot(tiempos, ruido, color='#c0392b', linewidth=1.2)
-        ax1.axhline(45, color='#e74c3c', linestyle='--', linewidth=1, label='Límite Recomendado (45 dBA)')
-        ax1.set_ylabel('Ruido (dBA)', color='#c0392b', fontweight='bold')
-        ax1.tick_params(axis='y', labelcolor='#c0392b')
-        ax1.set_ylim(30, max(85, pico_max + 10))
-        ax1.legend(loc='upper right', fontsize=8)
-        ax1.grid(True, alpha=0.3)
-        ax1.set_title(f"{day_name} {date_str}", fontweight='bold', fontsize=10, color='#2c3e50')
-        
-        ax2.plot(tiempos, luz, color='#f39c12', linewidth=1.2)
-        ax2.fill_between(tiempos, luz, color='#f39c12', alpha=0.2)
-        ax2.set_ylabel('Iluminancia (Lux)', color='#d68910', fontweight='bold')
-        ax2.tick_params(axis='y', labelcolor='#d68910')
-        ax2.set_ylim(0, max(2000, np.max(luz) + 100))
-        ax2.grid(True, alpha=0.3)
-        
-        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        ax2.xaxis.set_major_locator(mdates.HourLocator(interval=3))
-        plt.xticks(rotation=0)
-        ax2.set_xlabel('Horas del Día')
-        
-        img_b64 = fig_to_base64(fig)
+        # Bloque HTML de Picos Sostenidos para el reporte diario
+        html_picos_sostenidos = ""
+        if picos_dia:
+            lista_picos = "</li><li>".join(picos_dia)
+            html_picos_sostenidos = f"""
+            <div class="sustained-peaks">
+                <strong>⚠️ Picos Máximos Sostenidos (>45 dBA por más de 3 min):</strong>
+                <ul style="margin: 5px 0 0 0; padding-left: 20px;"><li>{lista_picos}</li></ul>
+            </div>
+            """
         
         block = f"""
         <div class="day-block">
@@ -219,8 +255,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
                     <table class="data-table" style="margin-top: 5px;">
                         <tr><td>Promedio Diurno:</td><td>{r_diurno:.1f} dBA</td></tr>
                         <tr><td>Promedio Nocturno:</td><td>{r_nocturno:.1f} dBA</td></tr>
-                        <tr><td><strong>Pico Máximo:</strong></td><td><strong>{pico_max:.1f} dBA</strong> (a las {hora_pico})</td></tr>
-                        <tr><td>Tiempo > 45 dBA:</td><td style="color: {'#c0392b' if pct_fuera_norma > 20 else '#27ae60'};"><strong>{pct_fuera_norma:.1f}%</strong> del día</td></tr>
+                        <tr><td>Tiempo total > 45 dBA:</td><td style="color: {'#c0392b' if pct_fuera_norma > 20 else '#27ae60'};"><strong>{pct_fuera_norma:.1f}%</strong> del día</td></tr>
                     </table>
                 </div>
                 <div class="metric-col">
@@ -231,57 +266,44 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
                     </table>
                 </div>
             </div>
-            <img src="data:image/png;base64,{img_b64}" class="plot-img">
+            {html_picos_sostenidos}
+            
+            <img src="data:image/png;base64,{img_diurno}" class="plot-img">
+            <img src="data:image/png;base64,{img_nocturno}" class="plot-img">
         </div>
         """
         daily_blocks.append(block)
 
+    # Lógica de alertas para el Resumen General
     alert_html = ""
     status_class = "status-box"
-    if len(alertas) > 0:
-        alert_html = "<ul class='alerts'><li>" + "</li><li>".join(alertas) + "</li></ul>"
+    if len(alertas_generales) > 0:
+        alert_html = "<ul class='alerts'><li>" + "</li><li>".join(alertas_generales) + "</li></ul>"
     else:
         status_class += " ok"
-        alert_html = "<span style='color: #27ae60; font-weight: bold;'>✓ No se registraron picos críticos de ruido fuera del rango de tolerancia durante la semana.</span>"
+        alert_html = "<span style='color: #27ae60; font-weight: bold;'>✓ Excelente: No se registraron eventos sostenidos de ruido por encima del rango de tolerancia.</span>"
 
     html_content += f"""
-    <h2>2. Resumen Ejecutivo</h2>
+    <h2>1- Resumen general de la semana</h2>
     <div class="status-panel">
         <div class="{status_class}">
-            <strong style="font-size: 11pt;">Estado General (Acústico):</strong><br>
-            Las mediciones acústicas promedio se mantienen {'estables' if np.mean(total_ruido) < 50 else 'con advertencias'} respecto a los umbrales recomendados. 
-            <br><br><strong>Alertas Críticas de la Semana:</strong><br>{alert_html}
+            <strong style="font-size: 11pt;">Estado Acústico Global:</strong><br>
+            Las mediciones promedio de la semana se mantienen {'estables' if np.mean(total_ruido) < 50 else 'con advertencias'} respecto a los umbrales de confort neonatal. 
+            <br><br><strong>Alertas Críticas de la Semana (Picos > 45 dBA por más de 3 min):</strong><br>{alert_html}
         </div>
     </div>
 
-    <h2>3. Referencias Ambientales (Normativas y Parámetros)</h2>
-    <h3>Marco de Referencia Acústico</h3>
-    <table class="data-table" style="width: 70%; margin: 0 auto;">
-        <tr><th>Ente</th><th>Valor Esperado</th></tr>
-        <tr><td>OMS</td><td>~ Nivel Sonoro Equivalente Ponderado (LAeq): 30 dBA</td></tr>
-        <tr><td>OMS</td><td>~ Nivel Sonoro Máximo (Lmax): 40 dBA</td></tr>
-        <tr><td>AAP</td><td>~ Nivel Sonoro Equivalente Ponderado (LAeq): 45 dBA</td></tr>
-        <tr><td>AAP</td><td>~ Nivel Sonoro Máximo (Lmax): 65 dBA</td></tr>
-    </table>
-
-    <h3>Marco de Referencia Lumínico</h3>
-    <p style="font-size: 9.5pt; color: #7f8c8d; margin-top: 0;">Valores teóricos esperados para el control del ciclo circadiano del neonato en la sala.</p>
-    <table class="data-table" style="width: 70%; margin: 0 auto;">
-        <tr><th>Condición de la Sala</th><th>Valor de Referencia Esperado</th></tr>
-        <tr><td>Todo apagado</td><td>~ XXX lux</td></tr>
-        <tr><td>Luz artificial</td><td>~ XXX lux</td></tr>
-        <tr><td>Luz del ventanal</td><td>~ XXX lux</td></tr>
-        <tr><td>Luz artificial + Luz de ventanal</td><td>~ XXX lux</td></tr>
-    </table>
-
-    <h2>4. Análisis Detallado Diario (Ruido y Luz)</h2>
+    <h2>2- Análisis diario (ruido y luz)</h2>
+    <p style="font-size: 9.5pt; color: #7f8c8d; margin-top: 0; margin-bottom: 20px;">
+    <strong>Criterio de Segmentación Horaria:</strong> Los promedios y gráficas se dividen en Período Diurno (08:00 a 20:00 hs) y Período Nocturno (20:00 a 08:00 hs).
+    </p>
     """
 
     for b in daily_blocks:
         html_content += b
 
     html_content += """
-    <h2>5. Metrología y Estado del Sistema</h2>
+    <h2>3- Estado del sistema</h2>
     <table class="data-table">
         <tr><th style="width: 30%;">Métrica de Red</th><th style="width: 70%;">Estado / Desempeño</th></tr>
         <tr><td><strong>Conectividad y Uptime</strong></td><td>La red WiFi de interconexión (ESP_A ↔ ESP minis ↔ ESP_B display) operó de forma continua para la captura de las muestras expuestas.</td></tr>
@@ -299,7 +321,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
 # ==========================================
 def enviar_correo(ruta_pdf):
     if not EMAIL_PASSWORD:
-        print("Advertencia: No se encontró la contraseña del correo en los secretos (EMAIL_PASSWORD). Omitiendo envío de email.")
+        print("Advertencia: No se encontró la contraseña del correo.")
         return
         
     print("Preparando envío de correo...")
@@ -326,13 +348,11 @@ def enviar_correo(ruta_pdf):
 if __name__ == "__main__":
     try:
         df_sensores = obtener_datos_influx()
-        
         if not df_sensores.empty:
             pdf_generado = generar_pdf(df_sensores)
             enviar_correo(pdf_generado)
             print("--- Proceso Semanal Finalizado Correctamente ---")
         else:
             print("No se encontraron datos en InfluxDB para los últimos 7 días.")
-            
     except Exception as e:
         print(f"Ocurrió un error crítico durante la ejecución: {e}")
