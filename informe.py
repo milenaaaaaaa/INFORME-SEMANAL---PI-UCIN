@@ -11,6 +11,7 @@ from weasyprint import HTML
 from influxdb_client import InfluxDBClient
 import smtplib
 from email.message import EmailMessage
+from datetime import datetime, time
 
 # ==========================================
 # 0. CONFIGURACIÓN DEL SISTEMA
@@ -35,37 +36,59 @@ def get_image_base64(filepath):
     except FileNotFoundError:
         return ""
 
-def generar_grafico_base64(df_periodo, titulo, color_ruido='#c0392b'):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 3.5), sharex=True)
+def generar_grafico_24h(df_dia):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9.5, 4.5), sharex=True)
     fig.subplots_adjust(hspace=0.2)
     
-    tiempos = df_periodo.index
-    ruido = df_periodo['ruido_dba'].values
-    luz = df_periodo['luz_lux'].values
+    if df_dia.empty:
+        plt.close(fig)
+        return ""
+
+    tiempos = df_dia.index
+    ruido = df_dia['ruido_dba'].values
+    luz = df_dia['luz_lux'].values
     
-    # Gráfico de Ruido
-    if len(ruido) > 0:
-        ax1.plot(tiempos, ruido, color=color_ruido, linewidth=1.2)
-        ax1.axhline(45, color='#e74c3c', linestyle='--', linewidth=1, label='Límite (45 dBA)')
-        pico_max = np.nanmax(ruido) if not np.isnan(ruido).all() else 65
-        ax1.set_ylim(30, max(85, pico_max + 10))
-    ax1.set_ylabel('Ruido (dBA)', color=color_ruido, fontweight='bold')
-    ax1.tick_params(axis='y', labelcolor=color_ruido)
+    # Definir los límites del día (00:00 a 23:59)
+    fecha_actual = tiempos[0].date()
+    t_start = pd.Timestamp(datetime.combine(fecha_actual, time(0, 0)))
+    t_end = pd.Timestamp(datetime.combine(fecha_actual, time(23, 59, 59)))
+    
+    # Definir los límites del turno diurno (08:00 a 20:00)
+    t_day_start = pd.Timestamp(datetime.combine(fecha_actual, time(8, 0)))
+    t_day_end = pd.Timestamp(datetime.combine(fecha_actual, time(20, 0)))
+
+    # --- GRÁFICO DE RUIDO ---
+    ax1.plot(tiempos, ruido, color='#2980b9', linewidth=1.2)
+    ax1.axhline(45, color='#e74c3c', linestyle='--', linewidth=1, label='Límite (45 dBA)')
+    
+    # Sombreado Nocturno (Fondo Gris)
+    ax1.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08) # Madrugada
+    ax1.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)     # Noche
+    
+    pico_max = np.nanmax(ruido) if not np.isnan(ruido).all() else 65
+    ax1.set_ylim(30, max(85, pico_max + 10))
+    ax1.set_xlim(t_start, t_end)
+    ax1.set_ylabel('Ruido (dBA)', color='#2980b9', fontweight='bold')
     ax1.grid(True, alpha=0.3)
-    ax1.set_title(titulo, fontweight='bold', fontsize=10, color='#2c3e50')
     
-    # Gráfico de Luz
-    if len(luz) > 0:
-        ax2.plot(tiempos, luz, color='#f39c12', linewidth=1.2)
-        ax2.fill_between(tiempos, luz, color='#f39c12', alpha=0.2)
+    # --- GRÁFICO DE LUZ ---
+    ax2.plot(tiempos, luz, color='#f39c12', linewidth=1.2)
+    ax2.fill_between(tiempos, luz, color='#f39c12', alpha=0.2)
+    
+    # Sombreado Nocturno (Fondo Gris)
+    ax2.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08)
+    ax2.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)
+
     ax2.set_ylabel('Luz (Lux)', color='#d68910', fontweight='bold')
-    ax2.tick_params(axis='y', labelcolor='#d68910')
-    ax2.set_ylim(0, 1000) # Límite fijo a 1000 lux
+    ax2.set_ylim(0, 1000) 
+    ax2.set_xlim(t_start, t_end)
     ax2.grid(True, alpha=0.3)
     
+    # Eje X: Ticks cada 2 horas (00:00, 02:00, etc.) para que no se amontonen
     ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    ax2.xaxis.set_major_locator(mdates.HourLocator(interval=2)) 
     plt.xticks(rotation=0)
-    ax2.set_xlabel('Hora')
+    ax2.set_xlabel('Hora del día (Fondo gris = Período Nocturno)')
     
     buf = BytesIO()
     fig.savefig(buf, format='png', bbox_inches='tight', dpi=120)
@@ -86,7 +109,6 @@ def obtener_picos_sostenidos(df_dia):
         duracion = period.index[-1] - period.index[0]
         minutos = int(duracion.total_seconds() // 60)
         
-        # Filtrar eventos que superen 1 minuto de duración
         if minutos >= 1:
             max_val = period['ruido_dba'].max()
             inicio = period.index[0].strftime("%H:%M")
@@ -103,7 +125,6 @@ def obtener_datos_influx():
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     query_api = client.query_api()
 
-    # Consulta actualizada a la métrica de LAeq (Nivel Equivalente) para alinear con Grafana
     query = f'''
         from(bucket: "{INFLUX_BUCKET}")
         |> range(start: -7d)
@@ -116,14 +137,10 @@ def obtener_datos_influx():
     client.close()
     
     if not df.empty:
-        # 1. Convertimos a hora local (Córdoba)
-        # 2. Hacemos tz_localize(None) para "limpiar" la metadata de zona horaria y evitar
-        #    que Matplotlib sume 3 horas al momento de graficar.
         df['_time'] = pd.to_datetime(df['_time']).dt.tz_convert('America/Argentina/Cordoba').dt.tz_localize(None)
         df.set_index('_time', inplace=True)
         df = df.sort_index()
         
-        # Extraemos el valor máximo (peor escenario) evaluando ahora la métrica LAeq
         if 'node_1_laeq_1s_dba' in df.columns and 'node_2_laeq_1s_dba' in df.columns:
             df['ruido_dba'] = df[['node_1_laeq_1s_dba', 'node_2_laeq_1s_dba']].max(axis=1)
         elif 'node_1_laeq_1s_dba' in df.columns:
@@ -209,7 +226,6 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         day_name = dias_esp.get(date.strftime("%A"), "")
         date_str = date.strftime("%d/%m/%Y")
         
-        # Segmentación Diurna (08:00 a 20:00) y Nocturna (Resto)
         horas = group.index.hour
         mask_day = (horas >= 8) & (horas < 20)
         mask_night = ~mask_day
@@ -229,7 +245,6 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         
         total_ruido.append(np.mean(ruido))
         
-        # Búsqueda de picos sostenidos (>65 dBA por >1 min)
         picos_dia = obtener_picos_sostenidos(group)
         if picos_dia:
             for p in picos_dia:
@@ -237,11 +252,9 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         
         pct_fuera_norma = (np.sum(ruido > 45) / len(ruido)) * 100
         
-        # Generación de gráficos independientes
-        img_diurno = generar_grafico_base64(df_diurno, "Período Diurno (08:00 - 20:00)", "#2980b9")
-        img_nocturno = generar_grafico_base64(df_nocturno, "Período Nocturno (20:00 - 08:00)", "#2c3e50")
+        # Generamos UN SOLO GRÁFICO de 24 horas por día
+        img_24h = generar_grafico_24h(group)
         
-        # Bloque HTML de Picos Sostenidos para el reporte diario
         html_picos_sostenidos = ""
         if picos_dia:
             lista_picos = "</li><li>".join(picos_dia)
@@ -274,13 +287,11 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
             </div>
             {html_picos_sostenidos}
             
-            <img src="data:image/png;base64,{img_diurno}" class="plot-img">
-            <img src="data:image/png;base64,{img_nocturno}" class="plot-img">
+            <img src="data:image/png;base64,{img_24h}" class="plot-img">
         </div>
         """
         daily_blocks.append(block)
 
-    # Lógica de alertas para el Resumen General
     alert_html = ""
     status_class = "status-box"
     if len(alertas_generales) > 0:
@@ -301,7 +312,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
 
     <h2>2- Análisis diario (ruido y luz)</h2>
     <p style="font-size: 9.5pt; color: #7f8c8d; margin-top: 0; margin-bottom: 20px;">
-    <strong>Criterio de Segmentación Horaria:</strong> Los promedios y gráficas se dividen en Período Diurno (08:00 a 20:00 hs) y Período Nocturno (20:00 a 08:00 hs).
+    <strong>Criterio de Segmentación Horaria:</strong> Los promedios se dividen en Período Diurno (08:00 a 20:00 hs) y Período Nocturno (20:00 a 08:00 hs). Las gráficas muestran las 24 horas continuas con un <strong>fondo gris</strong> indicando las horas nocturnas.
     </p>
     """
 
