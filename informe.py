@@ -359,7 +359,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
 
     <h2>2- Análisis diario (ruido y luz)</h2>
     <p style="font-size: 9.5pt; color: #7f8c8d; margin-top: 0; margin-bottom: 20px;">
-    <strong>Criterios Metrológicos:</strong> El cálculo de la exposición, las gráficas y la evaluación de ruidos constantes (≥ 3 min) se rigen bajo el estándar del Nivel Continuo Equivalente ($L_{Aeq}$). La detección de picos repentinos evalúa la métrica de Nivel Rápido ($L_{AF}$). El área gris delimita el Período Nocturno (20:00 a 08:00 hs).
+    <strong>Criterios Metrológicos:</strong> El cálculo de la exposición, las gráficas y la evaluación de ruidos constantes (≥ 3 min) se rigen bajo el estándar del Nivel Continuo Equivalente (L<sub>Aeq</sub>). La detección de picos repentinos evalúa la métrica de Nivel Rápido (L<sub>AF</sub>). El área gris delimita el Período Nocturno (20:00 a 08:00 hs).
     </p>
     """
 
