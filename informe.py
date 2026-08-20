@@ -73,24 +73,25 @@ def generar_grafico_base64(df_periodo, titulo, color_ruido='#c0392b'):
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 def obtener_picos_sostenidos(df_dia):
-    """Detecta períodos donde el ruido supera 45 dBA por más de 3 minutos consecutivos"""
-    is_over = df_dia['ruido_dba'] > 45
+    """Detecta períodos donde el ruido supera el umbral crítico (65 dBA) de forma continua"""
+    is_over = df_dia['ruido_dba'] > 65
     consecutive_groups = is_over.ne(is_over.shift()).cumsum()
-    over_45_periods = df_dia[is_over].groupby(consecutive_groups)
+    over_threshold_periods = df_dia[is_over].groupby(consecutive_groups)
     
     alertas_sostenidas = []
-    for _, period in over_45_periods:
+    for _, period in over_threshold_periods:
         if len(period) < 2: 
             continue
             
         duracion = period.index[-1] - period.index[0]
         minutos = int(duracion.total_seconds() // 60)
         
-        if minutos >= 3:
+        # Filtrar eventos que superen 1 minuto de duración
+        if minutos >= 1:
             max_val = period['ruido_dba'].max()
             inicio = period.index[0].strftime("%H:%M")
             fin = period.index[-1].strftime("%H:%M")
-            alertas_sostenidas.append(f"Pico de <strong>{max_val:.1f} dBA</strong> sostenido por {minutos} min ({inicio} a {fin})")
+            alertas_sostenidas.append(f"Ruido crítico continuo (>65 dBA) por {minutos} min. Pico: <strong>{max_val:.1f} dBA</strong> ({inicio} a {fin})")
             
     return alertas_sostenidas
 
@@ -102,11 +103,12 @@ def obtener_datos_influx():
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     query_api = client.query_api()
 
+    # Consulta actualizada a la métrica de LAeq (Nivel Equivalente) para alinear con Grafana
     query = f'''
         from(bucket: "{INFLUX_BUCKET}")
         |> range(start: -7d)
         |> filter(fn: (r) => r["_measurement"] == "environment_data")
-        |> filter(fn: (r) => r["_field"] == "node_1_laf_dba" or r["_field"] == "node_2_laf_dba" or r["_field"] == "lux")
+        |> filter(fn: (r) => r["_field"] == "node_1_laeq_1s_dba" or r["_field"] == "node_2_laeq_1s_dba" or r["_field"] == "lux")
         |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
     '''
     
@@ -114,16 +116,20 @@ def obtener_datos_influx():
     client.close()
     
     if not df.empty:
-        df['_time'] = pd.to_datetime(df['_time']).dt.tz_convert('America/Argentina/Cordoba')
+        # 1. Convertimos a hora local (Córdoba)
+        # 2. Hacemos tz_localize(None) para "limpiar" la metadata de zona horaria y evitar
+        #    que Matplotlib sume 3 horas al momento de graficar.
+        df['_time'] = pd.to_datetime(df['_time']).dt.tz_convert('America/Argentina/Cordoba').dt.tz_localize(None)
         df.set_index('_time', inplace=True)
         df = df.sort_index()
         
-        if 'node_1_laf_dba' in df.columns and 'node_2_laf_dba' in df.columns:
-            df['ruido_dba'] = df[['node_1_laf_dba', 'node_2_laf_dba']].max(axis=1)
-        elif 'node_1_laf_dba' in df.columns:
-            df['ruido_dba'] = df['node_1_laf_dba']
-        elif 'node_2_laf_dba' in df.columns:
-            df['ruido_dba'] = df['node_2_laf_dba']
+        # Extraemos el valor máximo (peor escenario) evaluando ahora la métrica LAeq
+        if 'node_1_laeq_1s_dba' in df.columns and 'node_2_laeq_1s_dba' in df.columns:
+            df['ruido_dba'] = df[['node_1_laeq_1s_dba', 'node_2_laeq_1s_dba']].max(axis=1)
+        elif 'node_1_laeq_1s_dba' in df.columns:
+            df['ruido_dba'] = df['node_1_laeq_1s_dba']
+        elif 'node_2_laeq_1s_dba' in df.columns:
+            df['ruido_dba'] = df['node_2_laeq_1s_dba']
         else:
             df['ruido_dba'] = np.nan
             
@@ -223,7 +229,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         
         total_ruido.append(np.mean(ruido))
         
-        # Búsqueda de picos sostenidos (>45 dBA por >3 min)
+        # Búsqueda de picos sostenidos (>65 dBA por >1 min)
         picos_dia = obtener_picos_sostenidos(group)
         if picos_dia:
             for p in picos_dia:
@@ -241,7 +247,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
             lista_picos = "</li><li>".join(picos_dia)
             html_picos_sostenidos = f"""
             <div class="sustained-peaks">
-                <strong>⚠️ Picos Máximos Sostenidos (>45 dBA por más de 3 min):</strong>
+                <strong>⚠️ Picos Máximos Sostenidos (>65 dBA por más de 1 min):</strong>
                 <ul style="margin: 5px 0 0 0; padding-left: 20px;"><li>{lista_picos}</li></ul>
             </div>
             """
@@ -281,7 +287,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         alert_html = "<ul class='alerts'><li>" + "</li><li>".join(alertas_generales) + "</li></ul>"
     else:
         status_class += " ok"
-        alert_html = "<span style='color: #27ae60; font-weight: bold;'>✓ Excelente: No se registraron eventos sostenidos de ruido por encima del rango de tolerancia.</span>"
+        alert_html = "<span style='color: #27ae60; font-weight: bold;'>✓ Excelente: No se registraron eventos sostenidos de ruido por encima del límite crítico de tolerancia.</span>"
 
     html_content += f"""
     <h2>1- Resumen general de la semana</h2>
@@ -289,7 +295,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         <div class="{status_class}">
             <strong style="font-size: 11pt;">Estado Acústico Global:</strong><br>
             Las mediciones promedio de la semana se mantienen {'estables' if np.mean(total_ruido) < 50 else 'con advertencias'} respecto a los umbrales de confort neonatal. 
-            <br><br><strong>Alertas Críticas de la Semana (Picos > 45 dBA por más de 3 min):</strong><br>{alert_html}
+            <br><br><strong>Alertas Críticas de la Semana (Picos > 65 dBA por más de 1 min):</strong><br>{alert_html}
         </div>
     </div>
 
