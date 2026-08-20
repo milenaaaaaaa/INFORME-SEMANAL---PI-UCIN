@@ -45,15 +45,13 @@ def generar_grafico_24h(df_dia):
         return ""
 
     tiempos = df_dia.index
-    ruido = df_dia['ruido_dba'].values
+    ruido = df_dia['ruido_eq_dba'].values
     luz = df_dia['luz_lux'].values
     
-    # Definir los límites del día (00:00 a 23:59)
     fecha_actual = tiempos[0].date()
     t_start = pd.Timestamp(datetime.combine(fecha_actual, time(0, 0)))
     t_end = pd.Timestamp(datetime.combine(fecha_actual, time(23, 59, 59)))
     
-    # Definir los límites del turno diurno (08:00 a 20:00)
     t_day_start = pd.Timestamp(datetime.combine(fecha_actual, time(8, 0)))
     t_day_end = pd.Timestamp(datetime.combine(fecha_actual, time(20, 0)))
 
@@ -61,21 +59,19 @@ def generar_grafico_24h(df_dia):
     ax1.plot(tiempos, ruido, color='#2980b9', linewidth=1.2)
     ax1.axhline(45, color='#e74c3c', linestyle='--', linewidth=1, label='Límite (45 dBA)')
     
-    # Sombreado Nocturno (Fondo Gris)
-    ax1.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08) # Madrugada
-    ax1.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)     # Noche
+    ax1.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08)
+    ax1.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)
     
     pico_max = np.nanmax(ruido) if not np.isnan(ruido).all() else 65
     ax1.set_ylim(30, max(85, pico_max + 10))
     ax1.set_xlim(t_start, t_end)
-    ax1.set_ylabel('Ruido (dBA)', color='#2980b9', fontweight='bold')
+    ax1.set_ylabel('Ruido LAeq (dBA)', color='#2980b9', fontweight='bold')
     ax1.grid(True, alpha=0.3)
     
     # --- GRÁFICO DE LUZ ---
     ax2.plot(tiempos, luz, color='#f39c12', linewidth=1.2)
     ax2.fill_between(tiempos, luz, color='#f39c12', alpha=0.2)
     
-    # Sombreado Nocturno (Fondo Gris)
     ax2.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08)
     ax2.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)
 
@@ -84,7 +80,6 @@ def generar_grafico_24h(df_dia):
     ax2.set_xlim(t_start, t_end)
     ax2.grid(True, alpha=0.3)
     
-    # Eje X: Ticks cada 2 horas (00:00, 02:00, etc.) para que no se amontonen
     ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     ax2.xaxis.set_major_locator(mdates.HourLocator(interval=2)) 
     plt.xticks(rotation=0)
@@ -95,27 +90,58 @@ def generar_grafico_24h(df_dia):
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
-def obtener_picos_sostenidos(df_dia):
-    """Detecta períodos donde el ruido supera el umbral crítico (65 dBA) de forma continua"""
-    is_over = df_dia['ruido_dba'] > 65
+def obtener_alertas_laf(df_dia):
+    """Evalúa la métrica LAF para atrapar impactos repentinos > 65 dBA"""
+    alertas = []
+    if 'ruido_fast_dba' not in df_dia.columns:
+        return alertas
+        
+    picos_por_minuto = df_dia['ruido_fast_dba'].resample('1min').max()
+    picos_criticos = picos_por_minuto[picos_por_minuto > 65]
+    
+    if not picos_criticos.empty:
+        is_over = picos_por_minuto > 65
+        consecutive = is_over.ne(is_over.shift()).cumsum()
+        grupos = picos_por_minuto[is_over].groupby(consecutive)
+        
+        for _, grupo in grupos:
+            max_val = grupo.max()
+            inicio = grupo.index[0].strftime("%H:%M")
+            fin = grupo.index[-1].strftime("%H:%M")
+            duracion_min = len(grupo)
+            
+            if duracion_min == 1:
+                alertas.append(f"Impacto aislado. Pico: <strong>{max_val:.1f} dBA</strong> a las {inicio}")
+            else:
+                alertas.append(f"Impactos múltiples durante {duracion_min} min. Pico: <strong>{max_val:.1f} dBA</strong> ({inicio} a {fin})")
+                
+    return alertas
+
+def obtener_alertas_laeq_sostenido(df_dia):
+    """Detecta ruido continuo (LAeq > 65 dBA) que dure 3 minutos consecutivos o más"""
+    alertas = []
+    if 'ruido_eq_dba' not in df_dia.columns:
+        return alertas
+
+    is_over = df_dia['ruido_eq_dba'] > 65
     consecutive_groups = is_over.ne(is_over.shift()).cumsum()
     over_threshold_periods = df_dia[is_over].groupby(consecutive_groups)
     
-    alertas_sostenidas = []
     for _, period in over_threshold_periods:
-        if len(period) < 2: 
+        if len(period) < 2:
             continue
             
         duracion = period.index[-1] - period.index[0]
-        minutos = int(duracion.total_seconds() // 60)
+        minutos = duracion.total_seconds() / 60.0
         
-        if minutos >= 1:
-            max_val = period['ruido_dba'].max()
+        if minutos >= 3.0:
+            max_val = period['ruido_eq_dba'].max()
             inicio = period.index[0].strftime("%H:%M")
             fin = period.index[-1].strftime("%H:%M")
-            alertas_sostenidas.append(f"Ruido crítico continuo (>65 dBA) por {minutos} min. Pico: <strong>{max_val:.1f} dBA</strong> ({inicio} a {fin})")
+            minutos_int = int(minutos)
+            alertas.append(f"Ruido constante por {minutos_int} min. Pico: <strong>{max_val:.1f} dBA</strong> ({inicio} a {fin})")
             
-    return alertas_sostenidas
+    return alertas
 
 # ==========================================
 # 1. EXTRACCIÓN DE DATOS
@@ -129,7 +155,7 @@ def obtener_datos_influx():
         from(bucket: "{INFLUX_BUCKET}")
         |> range(start: -7d)
         |> filter(fn: (r) => r["_measurement"] == "environment_data")
-        |> filter(fn: (r) => r["_field"] == "node_1_laeq_1s_dba" or r["_field"] == "node_2_laeq_1s_dba" or r["_field"] == "lux")
+        |> filter(fn: (r) => r["_field"] == "node_1_laeq_1s_dba" or r["_field"] == "node_2_laeq_1s_dba" or r["_field"] == "node_1_laf_dba" or r["_field"] == "node_2_laf_dba" or r["_field"] == "lux")
         |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
     '''
     
@@ -141,14 +167,25 @@ def obtener_datos_influx():
         df.set_index('_time', inplace=True)
         df = df.sort_index()
         
+        # LAeq (Para gráficos y exposición sostenida)
         if 'node_1_laeq_1s_dba' in df.columns and 'node_2_laeq_1s_dba' in df.columns:
-            df['ruido_dba'] = df[['node_1_laeq_1s_dba', 'node_2_laeq_1s_dba']].max(axis=1)
+            df['ruido_eq_dba'] = df[['node_1_laeq_1s_dba', 'node_2_laeq_1s_dba']].max(axis=1)
         elif 'node_1_laeq_1s_dba' in df.columns:
-            df['ruido_dba'] = df['node_1_laeq_1s_dba']
+            df['ruido_eq_dba'] = df['node_1_laeq_1s_dba']
         elif 'node_2_laeq_1s_dba' in df.columns:
-            df['ruido_dba'] = df['node_2_laeq_1s_dba']
+            df['ruido_eq_dba'] = df['node_2_laeq_1s_dba']
         else:
-            df['ruido_dba'] = np.nan
+            df['ruido_eq_dba'] = np.nan
+            
+        # LAF (Para picos e impactos instantáneos)
+        if 'node_1_laf_dba' in df.columns and 'node_2_laf_dba' in df.columns:
+            df['ruido_fast_dba'] = df[['node_1_laf_dba', 'node_2_laf_dba']].max(axis=1)
+        elif 'node_1_laf_dba' in df.columns:
+            df['ruido_fast_dba'] = df['node_1_laf_dba']
+        elif 'node_2_laf_dba' in df.columns:
+            df['ruido_fast_dba'] = df['node_2_laf_dba']
+        else:
+            df['ruido_fast_dba'] = np.nan
             
         if 'lux' in df.columns:
             df.rename(columns={'lux': 'luz_lux'}, inplace=True)
@@ -197,8 +234,9 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         .metric-col {{ display: table-cell; width: 50%; padding-right: 10px; }}
         .metric-col:last-child {{ padding-right: 0; padding-left: 10px; border-left: 1px solid #ddd; }}
         .plot-img {{ width: 100%; max-width: 100%; height: auto; display: block; margin: 10px auto; }}
-        .sustained-peaks {{ background-color: #fce8e6; border-left: 3px solid #e74c3c; padding: 8px; margin-top: 10px; font-size: 9pt; }}
+        .sustained-peaks {{ background-color: #fce8e6; border-left: 3px solid #e74c3c; padding: 10px; margin-top: 10px; font-size: 9pt; border-radius: 4px; }}
         .sustained-peaks strong {{ color: #c0392b; }}
+        .alert-title {{ font-weight: bold; color: #c0392b; margin-bottom: 3px; display: block; }}
     </style>
     </head>
     <body>
@@ -233,35 +271,44 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         df_diurno = group[mask_day]
         df_nocturno = group[mask_night]
         
-        ruido = group['ruido_dba'].dropna().values
+        ruido_eq = group['ruido_eq_dba'].dropna().values
         luz = group['luz_lux'].dropna().values
         
-        if len(ruido) == 0 or len(luz) == 0: continue
+        if len(ruido_eq) == 0 or len(luz) == 0: continue
             
-        r_diurno = df_diurno['ruido_dba'].mean() if not df_diurno.empty else 0
-        r_nocturno = df_nocturno['ruido_dba'].mean() if not df_nocturno.empty else 0
+        r_diurno = df_diurno['ruido_eq_dba'].mean() if not df_diurno.empty else 0
+        r_nocturno = df_nocturno['ruido_eq_dba'].mean() if not df_nocturno.empty else 0
         l_diurna = df_diurno['luz_lux'].mean() if not df_diurno.empty else 0
         l_nocturna = df_nocturno['luz_lux'].mean() if not df_nocturno.empty else 0
         
-        total_ruido.append(np.mean(ruido))
+        total_ruido.append(np.mean(ruido_eq))
         
-        picos_dia = obtener_picos_sostenidos(group)
-        if picos_dia:
-            for p in picos_dia:
-                alertas_generales.append(f"<strong>{day_name} {date_str}:</strong> {p}")
+        alertas_laf = obtener_alertas_laf(group)
+        alertas_laeq = obtener_alertas_laeq_sostenido(group)
         
-        pct_fuera_norma = (np.sum(ruido > 45) / len(ruido)) * 100
+        for p in alertas_laf: alertas_generales.append(f"<strong>{day_name} {date_str} (Impacto):</strong> {p}")
+        for p in alertas_laeq: alertas_generales.append(f"<strong>{day_name} {date_str} (Crítico Sostenido):</strong> {p}")
         
-        # Generamos UN SOLO GRÁFICO de 24 horas por día
+        pct_fuera_norma = (np.sum(ruido_eq > 45) / len(ruido_eq)) * 100
+        
         img_24h = generar_grafico_24h(group)
         
         html_picos_sostenidos = ""
-        if picos_dia:
-            lista_picos = "</li><li>".join(picos_dia)
+        if alertas_laf or alertas_laeq:
+            html_laf = ""
+            if alertas_laf:
+                lista_laf = "</li><li>".join(alertas_laf)
+                html_laf = f"<span class='alert-title'>⚠️ Impactos Críticos (LAF > 65 dBA):</span><ul style='margin: 0 0 10px 0; padding-left: 20px;'><li>{lista_laf}</li></ul>"
+                
+            html_laeq = ""
+            if alertas_laeq:
+                lista_laeq = "</li><li>".join(alertas_laeq)
+                html_laeq = f"<span class='alert-title'>⚠️ Ruido Constante Crítico (LAeq > 65 dBA por ≥ 3 min):</span><ul style='margin: 0; padding-left: 20px;'><li>{lista_laeq}</li></ul>"
+                
             html_picos_sostenidos = f"""
             <div class="sustained-peaks">
-                <strong>⚠️ Picos Máximos Sostenidos (>65 dBA por más de 1 min):</strong>
-                <ul style="margin: 5px 0 0 0; padding-left: 20px;"><li>{lista_picos}</li></ul>
+                {html_laf}
+                {html_laeq}
             </div>
             """
         
@@ -270,11 +317,11 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
             <div class="day-title">{day_name} {date_str}</div>
             <div class="metrics-container">
                 <div class="metric-col">
-                    <strong>Análisis Acústico</strong>
+                    <strong>Análisis Acústico (LAeq)</strong>
                     <table class="data-table" style="margin-top: 5px;">
                         <tr><td>Promedio Diurno:</td><td>{r_diurno:.1f} dBA</td></tr>
                         <tr><td>Promedio Nocturno:</td><td>{r_nocturno:.1f} dBA</td></tr>
-                            <tr><td>Exposición a ruido de fondo (>45 dBA):</td><td style="color: {'#e67e22' if pct_fuera_norma > 50 else '#34495e'};"><strong>{pct_fuera_norma:.1f}%</strong> del día</td></tr>
+                        <tr><td>Exposición al ruido de fondo (>45 dBA):</td><td style="color: {'#e67e22' if pct_fuera_norma > 50 else '#34495e'};"><strong>{pct_fuera_norma:.1f}%</strong> del día</td></tr>
                     </table>
                 </div>
                 <div class="metric-col">
@@ -298,21 +345,21 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         alert_html = "<ul class='alerts'><li>" + "</li><li>".join(alertas_generales) + "</li></ul>"
     else:
         status_class += " ok"
-        alert_html = "<span style='color: #27ae60; font-weight: bold;'>✓ Excelente: No se registraron eventos sostenidos de ruido por encima del límite crítico de tolerancia.</span>"
+        alert_html = "<span style='color: #27ae60; font-weight: bold;'>✓ Excelente: No se registraron impactos acústicos ni ruidos sostenidos por encima de 65 dBA.</span>"
 
     html_content += f"""
     <h2>1- Resumen general de la semana</h2>
     <div class="status-panel">
         <div class="{status_class}">
-            <strong style="font-size: 11pt;">Estado Acústico Global:</strong><br>
+            <strong style="font-size: 11pt;">Estado Acústico Global (Exposición Continua):</strong><br>
             Las mediciones promedio de la semana se mantienen {'estables' if np.mean(total_ruido) < 50 else 'con advertencias'} respecto a los umbrales de confort neonatal. 
-            <br><br><strong>Alertas Críticas de la Semana (Picos > 65 dBA por más de 1 min):</strong><br>{alert_html}
+            <br><br><strong>Registro Analítico de Alertas Clínicas:</strong><br>{alert_html}
         </div>
     </div>
 
     <h2>2- Análisis diario (ruido y luz)</h2>
     <p style="font-size: 9.5pt; color: #7f8c8d; margin-top: 0; margin-bottom: 20px;">
-    <strong>Criterio de Segmentación Horaria:</strong> Los promedios se dividen en Período Diurno (08:00 a 20:00 hs) y Período Nocturno (20:00 a 08:00 hs). Las gráficas muestran las 24 horas continuas con un <strong>fondo gris</strong> indicando las horas nocturnas.
+    <strong>Criterios Metrológicos:</strong> El cálculo de la exposición, las gráficas y la evaluación de ruidos constantes (≥ 3 min) se rigen bajo el estándar del Nivel Continuo Equivalente ($L_{Aeq}$). La detección de picos repentinos evalúa la métrica de Nivel Rápido ($L_{AF}$). El área gris delimita el Período Nocturno (20:00 a 08:00 hs).
     </p>
     """
 
