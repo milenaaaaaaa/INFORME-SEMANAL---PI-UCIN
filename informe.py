@@ -274,7 +274,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
                     <table class="data-table" style="margin-top: 5px;">
                         <tr><td>Promedio Diurno:</td><td>{r_diurno:.1f} dBA</td></tr>
                         <tr><td>Promedio Nocturno:</td><td>{r_nocturno:.1f} dBA</td></tr>
-                        <tr><td>Tiempo total > 45 dBA:</td><td style="color: {'#c0392b' if pct_fuera_norma > 20 else '#27ae60'};"><strong>{pct_fuera_norma:.1f}%</strong> del día</td></tr>
+                            <tr><td>Exposición a ruido de fondo (>45 dBA):</td><td style="color: {'#e67e22' if pct_fuera_norma > 50 else '#34495e'};"><strong>{pct_fuera_norma:.1f}%</strong> del día</td></tr>
                     </table>
                 </div>
                 <div class="metric-col">
