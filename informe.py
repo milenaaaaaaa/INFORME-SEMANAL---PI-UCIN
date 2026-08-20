@@ -80,7 +80,7 @@ def generar_grafico_24h(df_dia):
     ax2.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)
 
     ax2.set_ylabel('Luz (Lux)', color='#d68910', fontweight='bold')
-    ax2.set_ylim(0, 1000) 
+    ax2.set_ylim(0, 600) 
     ax2.set_xlim(t_start, t_end)
     ax2.grid(True, alpha=0.3)
     
