@@ -36,16 +36,18 @@ def get_image_base64(filepath):
     except FileNotFoundError:
         return ""
 
-def generar_grafico_24h(df_dia):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9.5, 4.5), sharex=True)
-    fig.subplots_adjust(hspace=0.2)
+def generar_graficos_diarios(df_dia):
+    # Se crean 3 subgráficos: LAeq, LAF y Luz
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9.5, 6.0), sharex=True)
+    fig.subplots_adjust(hspace=0.25)
     
     if df_dia.empty:
         plt.close(fig)
         return ""
 
     tiempos = df_dia.index
-    ruido = df_dia['ruido_eq_dba'].values
+    ruido_eq = df_dia['ruido_eq_dba'].values
+    ruido_fast = df_dia['ruido_fast_dba'].values
     luz = df_dia['luz_lux'].values
     
     fecha_actual = tiempos[0].date()
@@ -55,75 +57,59 @@ def generar_grafico_24h(df_dia):
     t_day_start = pd.Timestamp(datetime.combine(fecha_actual, time(8, 0)))
     t_day_end = pd.Timestamp(datetime.combine(fecha_actual, time(20, 0)))
 
-    # --- GRÁFICO DE RUIDO ---
-    ax1.plot(tiempos, ruido, color='#2980b9', linewidth=1.2)
+    # --- GRÁFICO 1: RUIDO CONTINUO (LAeq) ---
+    ax1.plot(tiempos, ruido_eq, color='#2980b9', linewidth=1.2)
     ax1.axhline(45, color='#e74c3c', linestyle='--', linewidth=1, label='Límite (45 dBA)')
-    
     ax1.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08)
     ax1.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)
     
-    pico_max = np.nanmax(ruido) if not np.isnan(ruido).all() else 65
-    ax1.set_ylim(30, max(85, pico_max + 10))
+    pico_max_eq = np.nanmax(ruido_eq) if not np.isnan(ruido_eq).all() else 65
+    ax1.set_ylim(30, max(85, pico_max_eq + 10))
     ax1.set_xlim(t_start, t_end)
-    ax1.set_ylabel('Ruido LAeq (dBA)', color='#2980b9', fontweight='bold')
+    ax1.set_ylabel('LAeq (dBA)\nExposición', color='#2980b9', fontweight='bold', fontsize=9)
     ax1.grid(True, alpha=0.3)
     
-    # --- GRÁFICO DE LUZ ---
-    ax2.plot(tiempos, luz, color='#f39c12', linewidth=1.2)
-    ax2.fill_between(tiempos, luz, color='#f39c12', alpha=0.2)
-    
+    # --- GRÁFICO 2: PICOS INSTANTÁNEOS (LAF) ---
+    ax2.plot(tiempos, ruido_fast, color='#8e44ad', linewidth=0.8, alpha=0.85)
+    # Línea punteada en 65 dBA según AAP para eventos impulsivos
+    ax2.axhline(65, color='#c0392b', linestyle=':', linewidth=1.5, label='Límite Picos (65 dBA)')
     ax2.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08)
     ax2.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)
-
-    ax2.set_ylabel('Luz (Lux)', color='#d68910', fontweight='bold')
-    ax2.set_ylim(0, 600) 
+    
+    pico_max_fast = np.nanmax(ruido_fast) if not np.isnan(ruido_fast).all() else 75
+    ax2.set_ylim(30, max(90, pico_max_fast + 10))
     ax2.set_xlim(t_start, t_end)
+    ax2.set_ylabel('LAF (dBA)\nPicos', color='#8e44ad', fontweight='bold', fontsize=9)
     ax2.grid(True, alpha=0.3)
     
-    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-    ax2.xaxis.set_major_locator(mdates.HourLocator(interval=2)) 
+    # --- GRÁFICO 3: LUZ ---
+    ax3.plot(tiempos, luz, color='#f39c12', linewidth=1.2)
+    ax3.fill_between(tiempos, luz, color='#f39c12', alpha=0.2)
+    ax3.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08)
+    ax3.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)
+
+    ax3.set_ylabel('Luz (Lux)', color='#d68910', fontweight='bold', fontsize=9)
+    ax3.set_ylim(0, 600) 
+    ax3.set_xlim(t_start, t_end)
+    ax3.grid(True, alpha=0.3)
+    
+    ax3.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    ax3.xaxis.set_major_locator(mdates.HourLocator(interval=2)) 
     plt.xticks(rotation=0)
-    ax2.set_xlabel('Hora del día (Fondo gris = Período Nocturno)')
+    ax3.set_xlabel('Hora del día (Fondo gris = Período Nocturno)')
     
     buf = BytesIO()
     fig.savefig(buf, format='png', bbox_inches='tight', dpi=120)
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
-def obtener_alertas_laf(df_dia):
-    """Evalúa la métrica LAF para atrapar impactos repentinos > 65 dBA"""
-    alertas = []
-    if 'ruido_fast_dba' not in df_dia.columns:
-        return alertas
-        
-    picos_por_minuto = df_dia['ruido_fast_dba'].resample('1min').max()
-    picos_criticos = picos_por_minuto[picos_por_minuto > 65]
-    
-    if not picos_criticos.empty:
-        is_over = picos_por_minuto > 65
-        consecutive = is_over.ne(is_over.shift()).cumsum()
-        grupos = picos_por_minuto[is_over].groupby(consecutive)
-        
-        for _, grupo in grupos:
-            max_val = grupo.max()
-            inicio = grupo.index[0].strftime("%H:%M")
-            fin = grupo.index[-1].strftime("%H:%M")
-            duracion_min = len(grupo)
-            
-            if duracion_min == 1:
-                alertas.append(f"Impacto aislado. Pico: <strong>{max_val:.1f} dBA</strong> a las {inicio}")
-            else:
-                alertas.append(f"Impactos múltiples durante {duracion_min} min. Pico: <strong>{max_val:.1f} dBA</strong> ({inicio} a {fin})")
-                
-    return alertas
-
-def obtener_alertas_laeq_sostenido(df_dia):
-    """Detecta ruido continuo (LAeq > 65 dBA) que dure 3 minutos consecutivos o más"""
+def obtener_alertas_laeq_60_5min(df_dia):
+    """Detecta alertas críticas: LAeq > 60 dBA sostenido por 5 minutos o más."""
     alertas = []
     if 'ruido_eq_dba' not in df_dia.columns:
         return alertas
 
-    is_over = df_dia['ruido_eq_dba'] > 65
+    is_over = df_dia['ruido_eq_dba'] > 60
     consecutive_groups = is_over.ne(is_over.shift()).cumsum()
     over_threshold_periods = df_dia[is_over].groupby(consecutive_groups)
     
@@ -134,12 +120,12 @@ def obtener_alertas_laeq_sostenido(df_dia):
         duracion = period.index[-1] - period.index[0]
         minutos = duracion.total_seconds() / 60.0
         
-        if minutos >= 3.0:
+        if minutos >= 5.0:
             max_val = period['ruido_eq_dba'].max()
             inicio = period.index[0].strftime("%H:%M")
             fin = period.index[-1].strftime("%H:%M")
             minutos_int = int(minutos)
-            alertas.append(f"Ruido constante por {minutos_int} min. Pico: <strong>{max_val:.1f} dBA</strong> ({inicio} a {fin})")
+            alertas.append(f"Alerta: <strong>{max_val:.1f} dBA</strong> sostenido durante {minutos_int} min. ({inicio} a {fin})")
             
     return alertas
 
@@ -224,19 +210,21 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         .status-panel {{ display: table; width: 100%; margin-bottom: 15px; }}
         .status-box {{ display: table-cell; padding: 15px; background-color: #fff8e1; border-left: 5px solid #f39c12; }}
         .status-box.ok {{ background-color: #e8fdf0; border-left: 5px solid #27ae60; }}
+        .status-box.alert {{ background-color: #fce8e6; border-left: 5px solid #c0392b; }}
         ul.alerts {{ margin: 5px 0 0 0; padding-left: 20px; color: #c0392b; font-size: 9.5pt; }}
         table.data-table {{ width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 9.5pt; }}
         table.data-table th, table.data-table td {{ border: 1px solid #ecf0f1; padding: 8px; text-align: center; }}
         table.data-table th {{ background-color: #f4f7f6; color: #34495e; font-weight: bold; }}
         .day-block {{ page-break-inside: avoid; margin-bottom: 30px; background-color: #fafbfc; border: 1px solid #e1e4e8; padding: 15px; border-radius: 4px; }}
         .day-title {{ font-size: 12pt; font-weight: bold; color: #2c3e50; margin-bottom: 10px; text-transform: uppercase; border-bottom: 2px solid #2980b9; display: inline-block; padding-bottom: 2px; }}
-        .metrics-container {{ display: table; width: 100%; margin-bottom: 15px; }}
+        .metrics-container {{ display: table; width: 100%; margin-bottom: 10px; }}
         .metric-col {{ display: table-cell; width: 50%; padding-right: 10px; }}
         .metric-col:last-child {{ padding-right: 0; padding-left: 10px; border-left: 1px solid #ddd; }}
         .plot-img {{ width: 100%; max-width: 100%; height: auto; display: block; margin: 10px auto; }}
-        .sustained-peaks {{ background-color: #fce8e6; border-left: 3px solid #e74c3c; padding: 10px; margin-top: 10px; font-size: 9pt; border-radius: 4px; }}
+        .sustained-peaks {{ background-color: #fce8e6; border-left: 3px solid #e74c3c; padding: 10px; margin-bottom: 10px; font-size: 9pt; border-radius: 4px; }}
         .sustained-peaks strong {{ color: #c0392b; }}
         .alert-title {{ font-weight: bold; color: #c0392b; margin-bottom: 3px; display: block; }}
+        .ref-text {{ font-size: 8.5pt; color: #7f8c8d; font-style: italic; margin-top: 5px; }}
     </style>
     </head>
     <body>
@@ -253,7 +241,6 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
     """
     
     daily_blocks = []
-    alertas_generales = []
     total_ruido = []
     
     dias_esp = {"Monday": "LUNES", "Tuesday": "MARTES", "Wednesday": "MIÉRCOLES", "Thursday": "JUEVES", "Friday": "VIERNES", "Saturday": "SÁBADO", "Sunday": "DOMINGO"}
@@ -283,32 +270,21 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         
         total_ruido.append(np.mean(ruido_eq))
         
-        alertas_laf = obtener_alertas_laf(group)
-        alertas_laeq = obtener_alertas_laeq_sostenido(group)
-        
-        for p in alertas_laf: alertas_generales.append(f"<strong>{day_name} {date_str} (Impacto):</strong> {p}")
-        for p in alertas_laeq: alertas_generales.append(f"<strong>{day_name} {date_str} (Crítico Sostenido):</strong> {p}")
-        
+        # Obtenemos las alertas de ruido continuo crítico para este día
+        alertas_laeq = obtener_alertas_laeq_60_5min(group)
         pct_fuera_norma = (np.sum(ruido_eq > 45) / len(ruido_eq)) * 100
         
-        img_24h = generar_grafico_24h(group)
+        img_graficos = generar_graficos_diarios(group)
         
+        # Bloque de Alertas (Solo se imprime si hubo algún evento crítico)
         html_picos_sostenidos = ""
-        if alertas_laf or alertas_laeq:
-            html_laf = ""
-            if alertas_laf:
-                lista_laf = "</li><li>".join(alertas_laf)
-                html_laf = f"<span class='alert-title'>⚠️ Impactos Críticos (LAF > 65 dBA):</span><ul style='margin: 0 0 10px 0; padding-left: 20px;'><li>{lista_laf}</li></ul>"
-                
-            html_laeq = ""
-            if alertas_laeq:
-                lista_laeq = "</li><li>".join(alertas_laeq)
-                html_laeq = f"<span class='alert-title'>⚠️ Ruido Constante Crítico (LAeq > 65 dBA por ≥ 3 min):</span><ul style='margin: 0; padding-left: 20px;'><li>{lista_laeq}</li></ul>"
-                
+        if alertas_laeq:
+            lista_laeq = "</li><li>".join(alertas_laeq)
             html_picos_sostenidos = f"""
             <div class="sustained-peaks">
-                {html_laf}
-                {html_laeq}
+                <span class="alert-title">⚠️ Alertas Críticas (LAeq > 60 dBA sostenido por ≥ 5 min):</span>
+                <ul style="margin: 0; padding-left: 20px;"><li>{lista_laeq}</li></ul>
+                <div class="ref-text">Referencia: La detección se activa al registrarse energía acústica constante superior a 60 dBA durante un bloque ininterrumpido de 5 minutos o más.</div>
             </div>
             """
         
@@ -332,34 +308,39 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
                     </table>
                 </div>
             </div>
+            
             {html_picos_sostenidos}
             
-            <img src="data:image/png;base64,{img_24h}" class="plot-img">
+            <div style="font-size: 8.5pt; color: #34495e; margin-bottom: 5px;">
+                <strong>Guía de lectura:</strong> El panel superior (LAeq) muestra la carga acústica o exposición continua. El panel central (LAF) identifica picos o impactos instantáneos.
+            </div>
+            <img src="data:image/png;base64,{img_graficos}" class="plot-img">
         </div>
         """
         daily_blocks.append(block)
 
-    alert_html = ""
-    status_class = "status-box"
-    if len(alertas_generales) > 0:
-        alert_html = "<ul class='alerts'><li>" + "</li><li>".join(alertas_generales) + "</li></ul>"
+    # Estado global evaluado con el nuevo límite de 45 dBA
+    promedio_semanal = np.mean(total_ruido) if total_ruido else 0
+    if promedio_semanal <= 45:
+        estado_global = "Las mediciones promedio de la semana se mantienen estables respecto a los umbrales de confort neonatal."
+        status_class = "status-box ok"
     else:
-        status_class += " ok"
-        alert_html = "<span style='color: #27ae60; font-weight: bold;'>✓ Excelente: No se registraron impactos acústicos ni ruidos sostenidos por encima de 65 dBA.</span>"
+        estado_global = f"El nivel promedio de la semana ({promedio_semanal:.1f} dBA) se encuentra por encima del umbral de confort recomendado."
+        status_class = "status-box alert"
 
     html_content += f"""
     <h2>1- Resumen general de la semana</h2>
     <div class="status-panel">
         <div class="{status_class}">
-            <strong style="font-size: 11pt;">Estado Acústico Global (Exposición Continua):</strong><br>
-            Las mediciones promedio de la semana se mantienen {'estables' if np.mean(total_ruido) < 50 else 'con advertencias'} respecto a los umbrales de confort neonatal. 
-            <br><br><strong>Registro Analítico de Alertas Clínicas:</strong><br>{alert_html}
+            <strong style="font-size: 11pt;">Estado Acústico Global:</strong><br>
+            {estado_global}<br>
+            <span class="ref-text" style="display: block; margin-top: 8px;">(Según el límite de exposición continua establecido por la AAP: 45 dBA LAeq)</span>
         </div>
     </div>
 
     <h2>2- Análisis diario (ruido y luz)</h2>
     <p style="font-size: 9.5pt; color: #7f8c8d; margin-top: 0; margin-bottom: 20px;">
-    <strong>Criterios Metrológicos:</strong> El cálculo de la exposición, las gráficas y la evaluación de ruidos constantes (≥ 3 min) se rigen bajo el estándar del Nivel Continuo Equivalente (L<sub>Aeq</sub>). La detección de picos repentinos evalúa la métrica de Nivel Rápido (L<sub>AF</sub>). El área gris delimita el Período Nocturno (20:00 a 08:00 hs).
+    <strong>Criterio de Segmentación:</strong> Los promedios se dividen en Período Diurno (08:00 a 20:00 hs) y Período Nocturno (20:00 a 08:00 hs). En las gráficas, el área con fondo gris delimita las horas nocturnas.
     </p>
     """
 
@@ -370,7 +351,7 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
     <h2>3- Estado del sistema</h2>
     <table class="data-table">
         <tr><th style="width: 30%;">Métrica de Red</th><th style="width: 70%;">Estado / Desempeño</th></tr>
-        <tr><td><strong>Conectividad y Uptime</strong></td><td>La red WiFi de interconexión (ESP_A ↔ ESP minis ↔ ESP_B display) operó de forma continua para la captura de las muestras expuestas.</td></tr>
+        <tr><td><strong>Conectividad y Uptime</strong></td><td>La red WiFi de interconexión operó de forma continua para la captura de las muestras expuestas.</td></tr>
     </table>
     </body>
     </html>
