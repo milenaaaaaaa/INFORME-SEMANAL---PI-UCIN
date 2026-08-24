@@ -71,7 +71,6 @@ def generar_graficos_diarios(df_dia):
     
     # --- GRÁFICO 2: PICOS INSTANTÁNEOS (LAF) ---
     ax2.plot(tiempos, ruido_fast, color='#8e44ad', linewidth=0.8, alpha=0.85)
-    # Línea punteada en 65 dBA según AAP para eventos impulsivos
     ax2.axhline(65, color='#c0392b', linestyle=':', linewidth=1.5, label='Límite Picos (65 dBA)')
     ax2.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08)
     ax2.axvspan(t_day_end, t_end, color='#2c3e50', alpha=0.08)
@@ -194,6 +193,22 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
     fecha_inicio = df.index.min().strftime("%d/%m/%Y")
     fecha_fin = df.index.max().strftime("%d/%m/%Y")
     
+    # Cálculo real de Uptime de red Wi-Fi
+    total_segundos_teoricos = (df.index.max() - df.index.min()).total_seconds()
+    muestras_reales_recibidas = len(df)
+    
+    if total_segundos_teoricos > 0:
+        uptime_pct = min(100.0, (muestras_reales_recibidas / total_segundos_teoricos) * 100)
+    else:
+        uptime_pct = 0.0
+
+    if uptime_pct >= 99.0:
+        estado_red = f"<span style='color: #27ae60;'><strong>Óptimo ({uptime_pct:.1f}% uptime)</strong></span><br>La red WiFi de interconexión operó de forma continua, sin pérdidas significativas de paquetes de datos."
+    elif uptime_pct >= 90.0:
+        estado_red = f"<span style='color: #f39c12;'><strong>Bueno ({uptime_pct:.1f}% uptime)</strong></span><br>Se registraron microcortes o desconexiones menores, compensados exitosamente por el algoritmo de interpolación."
+    else:
+        estado_red = f"<span style='color: #c0392b;'><strong>Advertencia ({uptime_pct:.1f}% uptime)</strong></span><br>Se detectaron pérdidas de conexión significativas que requirieron la reconstrucción algorítmica parcial de los registros temporales."
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -270,13 +285,11 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         
         total_ruido.append(np.mean(ruido_eq))
         
-        # Obtenemos las alertas de ruido continuo crítico para este día
         alertas_laeq = obtener_alertas_laeq_60_5min(group)
         pct_fuera_norma = (np.sum(ruido_eq > 45) / len(ruido_eq)) * 100
         
         img_graficos = generar_graficos_diarios(group)
         
-        # Bloque de Alertas (Solo se imprime si hubo algún evento crítico)
         html_picos_sostenidos = ""
         if alertas_laeq:
             lista_laeq = "</li><li>".join(alertas_laeq)
@@ -319,7 +332,6 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         """
         daily_blocks.append(block)
 
-    # Estado global evaluado con el nuevo límite de 45 dBA
     promedio_semanal = np.mean(total_ruido) if total_ruido else 0
     if promedio_semanal <= 45:
         estado_global = "Las mediciones promedio de la semana se mantienen estables respecto a los umbrales de confort neonatal."
@@ -347,11 +359,11 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
     for b in daily_blocks:
         html_content += b
 
-    html_content += """
+    html_content += f"""
     <h2>3- Estado del sistema</h2>
     <table class="data-table">
         <tr><th style="width: 30%;">Métrica de Red</th><th style="width: 70%;">Estado / Desempeño</th></tr>
-        <tr><td><strong>Conectividad y Uptime</strong></td><td>La red WiFi de interconexión operó de forma continua para la captura de las muestras expuestas.</td></tr>
+        <tr><td><strong>Conectividad y Uptime</strong></td><td>{estado_red}</td></tr>
     </table>
     </body>
     </html>
