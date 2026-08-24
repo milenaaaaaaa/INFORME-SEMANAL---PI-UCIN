@@ -5,7 +5,7 @@ on:
   schedule:
     # GitHub usa hora UTC. Para que corra a las 23:59 del domingo en Córdoba (UTC-3), 
     # lo programamos para las 02:59 UTC del lunes.
-    - cron: '59 2 * * 1'
+    - cron: '20 11 * * 1'
   
   # Habilita un botón para que puedas ejecutarlo a mano cuando quieras probarlo
   workflow_dispatch:
