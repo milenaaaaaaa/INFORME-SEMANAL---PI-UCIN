@@ -3,9 +3,9 @@ name: Generar Informe Semanal UCIN
 # Cuándo se ejecuta
 on:
   schedule:
-    # GitHub usa hora UTC. Para que corra a las 23:59 del domingo en Córdoba (UTC-3), 
-    # lo programamos para las 02:59 UTC del lunes.
-    - cron: '20 11 * * *'
+    # GitHub usa hora UTC. Para que corra a las 8:00 del lunes en Córdoba (UTC-3), 
+    # lo programamos para las 11:00 UTC del lunes.
+    - cron: '0 11 * * 1'
   
   # Habilita un botón para que puedas ejecutarlo a mano cuando quieras probarlo
   workflow_dispatch:
