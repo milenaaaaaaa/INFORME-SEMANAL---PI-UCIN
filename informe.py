@@ -27,7 +27,7 @@ EMAIL_SENDER = "monitoreoambienteucin@gmail.com"
 EMAIL_RECEIVER = "monitoreoambienteucin@gmail.com" 
 
 # ==========================================
-# FUNCIONES AUXILIARES GRÁFICAS Y DATOS
+# FUNCIONES AUXILIARES GRÁFICAS Y MATEMÁTICAS
 # ==========================================
 def get_image_base64(filepath):
     try:
@@ -36,8 +36,15 @@ def get_image_base64(filepath):
     except FileNotFoundError:
         return ""
 
+def promedio_energetico(valores):
+    """Calcula el LAeq de un período a partir de un arreglo de valores LAeq,1s."""
+    if len(valores) == 0:
+        return 0
+    # Cálculo del promedio logarítmico/energético
+    return 10 * np.log10(np.mean(10 ** (valores / 10.0)))
+
 def generar_graficos_diarios(df_dia):
-    # Se crean 3 subgráficos: LAeq, LAF y Luz
+    # Se crean 3 subgráficos: LAeq, LAFmax y Luz
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9.5, 6.0), sharex=True)
     fig.subplots_adjust(hspace=0.25)
     
@@ -69,7 +76,7 @@ def generar_graficos_diarios(df_dia):
     ax1.set_ylabel('LAeq (dBA)\nExposición', color='#2980b9', fontweight='bold', fontsize=9)
     ax1.grid(True, alpha=0.3)
     
-    # --- GRÁFICO 2: PICOS INSTANTÁNEOS (LAF) ---
+    # --- GRÁFICO 2: PICOS INSTANTÁNEOS (LAFmax) ---
     ax2.plot(tiempos, ruido_fast, color='#8e44ad', linewidth=0.8, alpha=0.85)
     ax2.axhline(65, color='#c0392b', linestyle=':', linewidth=1.5, label='Límite Picos (65 dBA)')
     ax2.axvspan(t_start, t_day_start, color='#2c3e50', alpha=0.08)
@@ -78,7 +85,7 @@ def generar_graficos_diarios(df_dia):
     pico_max_fast = np.nanmax(ruido_fast) if not np.isnan(ruido_fast).all() else 75
     ax2.set_ylim(30, max(90, pico_max_fast + 10))
     ax2.set_xlim(t_start, t_end)
-    ax2.set_ylabel('LAFmax (dBA)', color='#8e44ad', fontweight='bold', fontsize=9)
+    ax2.set_ylabel('LAFmax (dBA)\nPicos', color='#8e44ad', fontweight='bold', fontsize=9)
     ax2.grid(True, alpha=0.3)
     
     # --- GRÁFICO 3: LUZ ---
@@ -136,6 +143,7 @@ def obtener_datos_influx():
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     query_api = client.query_api()
 
+    # Se modificó la consulta para traer el laf_max en lugar de laf
     query = f'''
         from(bucket: "{INFLUX_BUCKET}")
         |> range(start: -7d)
@@ -278,12 +286,15 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
         
         if len(ruido_eq) == 0 or len(luz) == 0: continue
             
-        r_diurno = df_diurno['ruido_eq_dba'].mean() if not df_diurno.empty else 0
-        r_nocturno = df_nocturno['ruido_eq_dba'].mean() if not df_nocturno.empty else 0
+        # Cálculo usando promedio energético para los dBA
+        r_diurno = promedio_energetico(df_diurno['ruido_eq_dba'].values) if not df_diurno.empty else 0
+        r_nocturno = promedio_energetico(df_nocturno['ruido_eq_dba'].values) if not df_nocturno.empty else 0
+        
         l_diurna = df_diurno['luz_lux'].mean() if not df_diurno.empty else 0
         l_nocturna = df_nocturno['luz_lux'].mean() if not df_nocturno.empty else 0
         
-        total_ruido.append(np.mean(ruido_eq))
+        # Acumular todos los valores para el promedio semanal real
+        total_ruido.extend(ruido_eq)
         
         alertas_laeq = obtener_alertas_laeq_60_5min(group)
         pct_fuera_norma = (np.sum(ruido_eq > 45) / len(ruido_eq)) * 100
@@ -325,14 +336,16 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
             {html_picos_sostenidos}
             
             <div style="font-size: 8.5pt; color: #34495e; margin-bottom: 5px;">
-                <strong>Guía de lectura:</strong> El panel superior (LAeq) muestra la carga acústica o exposición continua. El panel central (LAF) identifica picos o impactos instantáneos.
+                <strong>Guía de lectura:</strong> El panel superior (LAeq) muestra la carga acústica o exposición continua. El panel central (LAFmax) identifica picos o impactos instantáneos.
             </div>
             <img src="data:image/png;base64,{img_graficos}" class="plot-img">
         </div>
         """
         daily_blocks.append(block)
 
-    promedio_semanal = np.mean(total_ruido) if total_ruido else 0
+    # Cálculo final del promedio global energético de la semana
+    promedio_semanal = promedio_energetico(np.array(total_ruido)) if total_ruido else 0
+    
     if promedio_semanal <= 45:
         estado_global = "Las mediciones promedio de la semana se mantienen estables respecto a los umbrales de confort neonatal."
         status_class = "status-box ok"
