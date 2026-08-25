@@ -185,7 +185,8 @@ def obtener_datos_influx():
         else:
             df['luz_lux'] = np.nan
             
-        df.ffill(inplace=True) 
+       # Rellenar microcortes (máximo 10 segundos). Los cortes mayores quedan como vacíos (NaN)
+        df.ffill(limit=10, inplace=True)
     
     return df
 
