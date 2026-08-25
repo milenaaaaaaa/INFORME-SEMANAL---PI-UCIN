@@ -78,7 +78,7 @@ def generar_graficos_diarios(df_dia):
     pico_max_fast = np.nanmax(ruido_fast) if not np.isnan(ruido_fast).all() else 75
     ax2.set_ylim(30, max(90, pico_max_fast + 10))
     ax2.set_xlim(t_start, t_end)
-    ax2.set_ylabel('LAF (dBA)\nPicos', color='#8e44ad', fontweight='bold', fontsize=9)
+    ax2.set_ylabel('LAFmax (dBA)', color='#8e44ad', fontweight='bold', fontsize=9)
     ax2.grid(True, alpha=0.3)
     
     # --- GRÁFICO 3: LUZ ---
@@ -140,7 +140,7 @@ def obtener_datos_influx():
         from(bucket: "{INFLUX_BUCKET}")
         |> range(start: -7d)
         |> filter(fn: (r) => r["_measurement"] == "environment_data")
-        |> filter(fn: (r) => r["_field"] == "node_1_laeq_1s_dba" or r["_field"] == "node_2_laeq_1s_dba" or r["_field"] == "node_1_laf_dba" or r["_field"] == "node_2_laf_dba" or r["_field"] == "lux")
+        |> filter(fn: (r) => r["_field"] == "node_1_laeq_1s_dba" or r["_field"] == "node_2_laeq_1s_dba" or r["_field"] == "node_1_laf_max_1s_dba" or r["_field"] == "node_2_laf_max_1s_dba" or r["_field"] == "lux")
         |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
     '''
     
@@ -162,13 +162,13 @@ def obtener_datos_influx():
         else:
             df['ruido_eq_dba'] = np.nan
             
-        # LAF (Para picos e impactos instantáneos)
-        if 'node_1_laf_dba' in df.columns and 'node_2_laf_dba' in df.columns:
-            df['ruido_fast_dba'] = df[['node_1_laf_dba', 'node_2_laf_dba']].max(axis=1)
-        elif 'node_1_laf_dba' in df.columns:
-            df['ruido_fast_dba'] = df['node_1_laf_dba']
-        elif 'node_2_laf_dba' in df.columns:
-            df['ruido_fast_dba'] = df['node_2_laf_dba']
+        # LAFmax (Para picos e impactos instantáneos dentro del segundo)
+        if 'node_1_laf_max_1s_dba' in df.columns and 'node_2_laf_max_1s_dba' in df.columns:
+            df['ruido_fast_dba'] = df[['node_1_laf_max_1s_dba', 'node_2_laf_max_1s_dba']].max(axis=1)
+        elif 'node_1_laf_max_1s_dba' in df.columns:
+            df['ruido_fast_dba'] = df['node_1_laf_max_1s_dba']
+        elif 'node_2_laf_max_1s_dba' in df.columns:
+            df['ruido_fast_dba'] = df['node_2_laf_max_1s_dba']
         else:
             df['ruido_fast_dba'] = np.nan
             
