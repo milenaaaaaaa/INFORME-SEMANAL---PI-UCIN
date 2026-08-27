@@ -112,12 +112,17 @@ def generar_graficos_diarios(df_dia):
 def obtener_alertas_laeq_60_5min(df_dia):
     """Detecta alertas críticas: LAeq > 60 dBA sostenido por 5 minutos o más."""
     alertas = []
-    if 'ruido_eq_dba' not in df_dia.columns:
+    if 'ruido_eq_dba' not in df_dia.columns or df_dia.empty:
         return alertas
 
-    is_over = df_dia['ruido_eq_dba'] > 60
+  
+    serie_ruido_alertas = df_dia['ruido_eq_dba'].ffill(limit=60)
+
+    is_over = serie_ruido_alertas > 60
     consecutive_groups = is_over.ne(is_over.shift()).cumsum()
-    over_threshold_periods = df_dia[is_over].groupby(consecutive_groups)
+    
+    # Agrupamos sobre los datos reales usando los índices detectados por la serie tolerante
+    over_threshold_periods = df_dia['ruido_eq_dba'][is_over].groupby(consecutive_groups)
     
     for _, period in over_threshold_periods:
         if len(period) < 2:
@@ -127,10 +132,18 @@ def obtener_alertas_laeq_60_5min(df_dia):
         minutos = duracion.total_seconds() / 60.0
         
         if minutos >= 5.0:
-            max_val = period['ruido_eq_dba'].max()
+            
+            muestras_esperadas = minutos * 60.0
+            if len(period) < (0.9 * muestras_esperadas):
+                continue
+                
+            max_val = period.max()
             inicio = period.index[0].strftime("%H:%M")
             fin = period.index[-1].strftime("%H:%M")
-            minutos_int = int(minutos)
+            
+           
+            minutos_int = round(minutos)
+            
             alertas.append(f"Alerta: <strong>{max_val:.1f} dBA</strong> sostenido durante {minutos_int} min. ({inicio} a {fin})")
             
     return alertas
@@ -143,7 +156,6 @@ def obtener_datos_influx():
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     query_api = client.query_api()
 
-    # Se modificó la consulta para traer el laf_max en lugar de laf
     query = f'''
         from(bucket: "{INFLUX_BUCKET}")
         |> range(start: -7d)
@@ -159,7 +171,11 @@ def obtener_datos_influx():
         df['_time'] = pd.to_datetime(df['_time']).dt.tz_convert('America/Argentina/Cordoba').dt.tz_localize(None)
         df.set_index('_time', inplace=True)
         df = df.sort_index()
-        
+   
+        total_segundos_teoricos = (df.index.max() - df.index.min()).total_seconds()
+        muestras_reales = len(df)
+        uptime_pct = min(100.0, (muestras_reales / total_segundos_teoricos) * 100) if total_segundos_teoricos > 0 else 0.0
+
         # LAeq (Para gráficos y exposición sostenida)
         if 'node_1_laeq_1s_dba' in df.columns and 'node_2_laeq_1s_dba' in df.columns:
             df['ruido_eq_dba'] = df[['node_1_laeq_1s_dba', 'node_2_laeq_1s_dba']].max(axis=1)
@@ -182,18 +198,30 @@ def obtener_datos_influx():
             
         if 'lux' in df.columns:
             df.rename(columns={'lux': 'luz_lux'}, inplace=True)
+            
+     
+            condiciones = [
+                df['luz_lux'] < 20.0,
+                df['luz_lux'] > 80.0
+            ]
+            elecciones = [
+                df['luz_lux'] * 1.35,
+                df['luz_lux'] * 0.88
+            ]
+            df['luz_lux'] = np.select(condiciones, elecciones, default=df['luz_lux'])
         else:
             df['luz_lux'] = np.nan
-            
-       # Rellenar microcortes (máximo 10 segundos). Los cortes mayores quedan como vacíos (NaN)
-        df.ffill(limit=10, inplace=True)
-    
-    return df
+
+        df = df.resample('1s').ffill(limit=10)
+    else:
+        uptime_pct = 0.0
+        
+    return df, uptime_pct
 
 # ==========================================
 # 2. PROCESAMIENTO Y GENERACIÓN DEL PDF
 # ==========================================
-def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
+def generar_pdf(df, uptime_pct, ruta_salida="informe_semanal_ucin.pdf"):
     print("Procesando métricas y generando el PDF...")
     
     logo_hosp_b64 = get_image_base64("logo hospital.jpeg")
@@ -201,15 +229,6 @@ def generar_pdf(df, ruta_salida="informe_semanal_ucin.pdf"):
     
     fecha_inicio = df.index.min().strftime("%d/%m/%Y")
     fecha_fin = df.index.max().strftime("%d/%m/%Y")
-    
-    # Cálculo real de Uptime de red Wi-Fi
-    total_segundos_teoricos = (df.index.max() - df.index.min()).total_seconds()
-    muestras_reales_recibidas = len(df)
-    
-    if total_segundos_teoricos > 0:
-        uptime_pct = min(100.0, (muestras_reales_recibidas / total_segundos_teoricos) * 100)
-    else:
-        uptime_pct = 0.0
 
     if uptime_pct >= 99.0:
         estado_red = f"<span style='color: #27ae60;'><strong>Óptimo ({uptime_pct:.1f}% uptime)</strong></span><br>La red WiFi de interconexión operó de forma continua, sin pérdidas significativas de paquetes de datos."
@@ -418,9 +437,9 @@ def enviar_correo(ruta_pdf):
 # ==========================================
 if __name__ == "__main__":
     try:
-        df_sensores = obtener_datos_influx()
+        df_sensores, uptime_pct = obtener_datos_influx()
         if not df_sensores.empty:
-            pdf_generado = generar_pdf(df_sensores)
+            pdf_generado = generar_pdf(df_sensores, uptime_pct)
             enviar_correo(pdf_generado)
             print("--- Proceso Semanal Finalizado Correctamente ---")
         else:
