@@ -11,7 +11,7 @@ from weasyprint import HTML
 from influxdb_client import InfluxDBClient
 import smtplib
 from email.message import EmailMessage
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 # ==========================================
 # 0. CONFIGURACIÓN DEL SISTEMA
@@ -38,13 +38,12 @@ def get_image_base64(filepath):
 
 def promedio_energetico(valores):
     """Calcula el LAeq de un período a partir de un arreglo de valores LAeq,1s."""
-    if len(valores) == 0:
+    valores_validos = valores[~np.isnan(valores)]
+    if len(valores_validos) == 0:
         return 0
-    # Cálculo del promedio logarítmico/energético
-    return 10 * np.log10(np.mean(10 ** (valores / 10.0)))
+    return 10 * np.log10(np.mean(10 ** (valores_validos / 10.0)))
 
 def generar_graficos_diarios(df_dia):
-    # Se crean 3 subgráficos: LAeq, LAFmax y Luz
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9.5, 6.0), sharex=True)
     fig.subplots_adjust(hspace=0.25)
     
@@ -110,18 +109,14 @@ def generar_graficos_diarios(df_dia):
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 def obtener_alertas_laeq_60_5min(df_dia):
-    """Detecta alertas críticas: LAeq > 60 dBA sostenido por 5 minutos o más."""
     alertas = []
     if 'ruido_eq_dba' not in df_dia.columns or df_dia.empty:
         return alertas
 
-  
     serie_ruido_alertas = df_dia['ruido_eq_dba'].ffill(limit=60)
-
     is_over = serie_ruido_alertas > 60
     consecutive_groups = is_over.ne(is_over.shift()).cumsum()
     
-    # Agrupamos sobre los datos reales usando los índices detectados por la serie tolerante
     over_threshold_periods = df_dia['ruido_eq_dba'][is_over].groupby(consecutive_groups)
     
     for _, period in over_threshold_periods:
@@ -132,7 +127,6 @@ def obtener_alertas_laeq_60_5min(df_dia):
         minutos = duracion.total_seconds() / 60.0
         
         if minutos >= 5.0:
-            
             muestras_esperadas = minutos * 60.0
             if len(period) < (0.9 * muestras_esperadas):
                 continue
@@ -140,10 +134,7 @@ def obtener_alertas_laeq_60_5min(df_dia):
             max_val = period.max()
             inicio = period.index[0].strftime("%H:%M")
             fin = period.index[-1].strftime("%H:%M")
-            
-           
             minutos_int = round(minutos)
-            
             alertas.append(f"Alerta: <strong>{max_val:.1f} dBA</strong> sostenido durante {minutos_int} min. ({inicio} a {fin})")
             
     return alertas
@@ -152,13 +143,26 @@ def obtener_alertas_laeq_60_5min(df_dia):
 # 1. EXTRACCIÓN DE DATOS
 # ==========================================
 def obtener_datos_influx():
-    print("Conectando a InfluxDB Cloud...")
+    print("Conectando a InfluxDB Cloud y anclando ventanas de tiempo...")
+    
+    # Anclaje Temporal Absoluto: Forzamos el rango de 08:00 AM a 08:00 AM (Córdoba)
+    ahora_local = pd.Timestamp.now(tz='America/Argentina/Cordoba')
+    fin_local = ahora_local.replace(hour=8, minute=0, second=0, microsecond=0)
+    
+    if ahora_local.hour < 8: 
+        fin_local -= pd.Timedelta(days=1)
+        
+    inicio_local = fin_local - pd.Timedelta(days=7)
+    
+    start_utc = inicio_local.tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%SZ')
+    stop_utc = fin_local.tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%SZ')
+
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     query_api = client.query_api()
 
     query = f'''
         from(bucket: "{INFLUX_BUCKET}")
-        |> range(start: -7d)
+        |> range(start: {start_utc}, stop: {stop_utc})
         |> filter(fn: (r) => r["_measurement"] == "environment_data")
         |> filter(fn: (r) => r["_field"] == "node_1_laeq_1s_dba" or r["_field"] == "node_2_laeq_1s_dba" or r["_field"] == "node_1_laf_max_1s_dba" or r["_field"] == "node_2_laf_max_1s_dba" or r["_field"] == "lux")
         |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
@@ -176,7 +180,6 @@ def obtener_datos_influx():
         muestras_reales = len(df)
         uptime_pct = min(100.0, (muestras_reales / total_segundos_teoricos) * 100) if total_segundos_teoricos > 0 else 0.0
 
-        # LAeq (Para gráficos y exposición sostenida)
         if 'node_1_laeq_1s_dba' in df.columns and 'node_2_laeq_1s_dba' in df.columns:
             df['ruido_eq_dba'] = df[['node_1_laeq_1s_dba', 'node_2_laeq_1s_dba']].max(axis=1)
         elif 'node_1_laeq_1s_dba' in df.columns:
@@ -186,7 +189,6 @@ def obtener_datos_influx():
         else:
             df['ruido_eq_dba'] = np.nan
             
-        # LAFmax (Para picos e impactos instantáneos dentro del segundo)
         if 'node_1_laf_max_1s_dba' in df.columns and 'node_2_laf_max_1s_dba' in df.columns:
             df['ruido_fast_dba'] = df[['node_1_laf_max_1s_dba', 'node_2_laf_max_1s_dba']].max(axis=1)
         elif 'node_1_laf_max_1s_dba' in df.columns:
@@ -198,16 +200,8 @@ def obtener_datos_influx():
             
         if 'lux' in df.columns:
             df.rename(columns={'lux': 'luz_lux'}, inplace=True)
-            
-     
-            condiciones = [
-                df['luz_lux'] < 20.0,
-                df['luz_lux'] > 80.0
-            ]
-            elecciones = [
-                df['luz_lux'] * 1.35,
-                df['luz_lux'] * 0.88
-            ]
+            condiciones = [df['luz_lux'] < 20.0, df['luz_lux'] > 80.0]
+            elecciones = [df['luz_lux'] * 1.35, df['luz_lux'] * 0.88]
             df['luz_lux'] = np.select(condiciones, elecciones, default=df['luz_lux'])
         else:
             df['luz_lux'] = np.nan
@@ -306,14 +300,22 @@ def generar_pdf(df, uptime_pct, ruta_salida="informe_semanal_ucin.pdf"):
         
         if len(ruido_eq) == 0 or len(luz) == 0: continue
             
-        # Cálculo usando promedio energético para los dBA
         r_diurno = promedio_energetico(df_diurno['ruido_eq_dba'].values) if not df_diurno.empty else 0
         r_nocturno = promedio_energetico(df_nocturno['ruido_eq_dba'].values) if not df_nocturno.empty else 0
+        
+        pico_r_diurno = df_diurno['ruido_fast_dba'].max() if not df_diurno.empty else 0
+        pico_r_diurno = pico_r_diurno if pd.notna(pico_r_diurno) else 0
+        pico_r_nocturno = df_nocturno['ruido_fast_dba'].max() if not df_nocturno.empty else 0
+        pico_r_nocturno = pico_r_nocturno if pd.notna(pico_r_nocturno) else 0
         
         l_diurna = df_diurno['luz_lux'].mean() if not df_diurno.empty else 0
         l_nocturna = df_nocturno['luz_lux'].mean() if not df_nocturno.empty else 0
         
-        # Acumular todos los valores para el promedio semanal real
+        pico_l_diurna = df_diurno['luz_lux'].max() if not df_diurno.empty else 0
+        pico_l_diurna = pico_l_diurna if pd.notna(pico_l_diurna) else 0
+        pico_l_nocturna = df_nocturno['luz_lux'].max() if not df_nocturno.empty else 0
+        pico_l_nocturna = pico_l_nocturna if pd.notna(pico_l_nocturna) else 0
+        
         total_ruido.extend(ruido_eq)
         
         alertas_laeq = obtener_alertas_laeq_60_5min(group)
@@ -337,10 +339,12 @@ def generar_pdf(df, uptime_pct, ruta_salida="informe_semanal_ucin.pdf"):
             <div class="day-title">{day_name} {date_str}</div>
             <div class="metrics-container">
                 <div class="metric-col">
-                    <strong>Análisis Acústico (LAeq)</strong>
+                    <strong>Análisis Acústico (LAeq y LAFmax)</strong>
                     <table class="data-table" style="margin-top: 5px;">
                         <tr><td>Promedio Diurno:</td><td>{r_diurno:.1f} dBA</td></tr>
+                        <tr><td style="color: #8e44ad;">Pico Máx. Diurno (LAFmax):</td><td style="color: #8e44ad;">{pico_r_diurno:.1f} dBA</td></tr>
                         <tr><td>Promedio Nocturno:</td><td>{r_nocturno:.1f} dBA</td></tr>
+                        <tr><td style="color: #8e44ad;">Pico Máx. Nocturno (LAFmax):</td><td style="color: #8e44ad;">{pico_r_nocturno:.1f} dBA</td></tr>
                         <tr><td>Exposición al ruido de fondo (>45 dBA):</td><td style="color: {'#e67e22' if pct_fuera_norma > 50 else '#34495e'};"><strong>{pct_fuera_norma:.1f}%</strong> del día</td></tr>
                     </table>
                 </div>
@@ -348,7 +352,9 @@ def generar_pdf(df, uptime_pct, ruta_salida="informe_semanal_ucin.pdf"):
                     <strong>Análisis Lumínico</strong>
                     <table class="data-table" style="margin-top: 5px;">
                         <tr><td>Promedio Diurno:</td><td>{l_diurna:.0f} Lux</td></tr>
+                        <tr><td style="color: #d68910;">Pico Máx. Diurno:</td><td style="color: #d68910;">{pico_l_diurna:.0f} Lux</td></tr>
                         <tr><td>Promedio Nocturno:</td><td>{l_nocturna:.0f} Lux</td></tr>
+                        <tr><td style="color: #d68910;">Pico Máx. Nocturno:</td><td style="color: #d68910;">{pico_l_nocturna:.0f} Lux</td></tr>
                     </table>
                 </div>
             </div>
@@ -363,7 +369,6 @@ def generar_pdf(df, uptime_pct, ruta_salida="informe_semanal_ucin.pdf"):
         """
         daily_blocks.append(block)
 
-    # Cálculo final del promedio global energético de la semana
     promedio_semanal = promedio_energetico(np.array(total_ruido)) if total_ruido else 0
     
     if promedio_semanal <= 45:
