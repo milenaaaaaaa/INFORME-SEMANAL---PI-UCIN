@@ -43,6 +43,15 @@ def promedio_energetico(valores):
         return 0
     return 10 * np.log10(np.mean(10 ** (valores_validos / 10.0)))
 
+def obtener_pico_y_hora(serie):
+    """Obtiene el valor máximo de una serie temporal y su hora exacta (HH:MM)."""
+    serie_valida = serie.dropna()
+    if not serie_valida.empty:
+        max_val = serie_valida.max()
+        max_time = serie_valida.idxmax().strftime('%H:%M')
+        return max_val, max_time
+    return 0.0, "--:--"
+
 def generar_graficos_diarios(df_dia):
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9.5, 6.0), sharex=True)
     fig.subplots_adjust(hspace=0.25)
@@ -303,18 +312,15 @@ def generar_pdf(df, uptime_pct, ruta_salida="informe_semanal_ucin.pdf"):
         r_diurno = promedio_energetico(df_diurno['ruido_eq_dba'].values) if not df_diurno.empty else 0
         r_nocturno = promedio_energetico(df_nocturno['ruido_eq_dba'].values) if not df_nocturno.empty else 0
         
-        pico_r_diurno = df_diurno['ruido_fast_dba'].max() if not df_diurno.empty else 0
-        pico_r_diurno = pico_r_diurno if pd.notna(pico_r_diurno) else 0
-        pico_r_nocturno = df_nocturno['ruido_fast_dba'].max() if not df_nocturno.empty else 0
-        pico_r_nocturno = pico_r_nocturno if pd.notna(pico_r_nocturno) else 0
+        # Picos y horas exactas
+        pico_r_diurno, hr_r_diurno = obtener_pico_y_hora(df_diurno['ruido_fast_dba'])
+        pico_r_nocturno, hr_r_nocturno = obtener_pico_y_hora(df_nocturno['ruido_fast_dba'])
+        
+        pico_l_diurna, hr_l_diurna = obtener_pico_y_hora(df_diurno['luz_lux'])
+        pico_l_nocturna, hr_l_nocturna = obtener_pico_y_hora(df_nocturno['luz_lux'])
         
         l_diurna = df_diurno['luz_lux'].mean() if not df_diurno.empty else 0
         l_nocturna = df_nocturno['luz_lux'].mean() if not df_nocturno.empty else 0
-        
-        pico_l_diurna = df_diurno['luz_lux'].max() if not df_diurno.empty else 0
-        pico_l_diurna = pico_l_diurna if pd.notna(pico_l_diurna) else 0
-        pico_l_nocturna = df_nocturno['luz_lux'].max() if not df_nocturno.empty else 0
-        pico_l_nocturna = pico_l_nocturna if pd.notna(pico_l_nocturna) else 0
         
         total_ruido.extend(ruido_eq)
         
@@ -342,9 +348,9 @@ def generar_pdf(df, uptime_pct, ruta_salida="informe_semanal_ucin.pdf"):
                     <strong>Análisis Acústico (LAeq y LAFmax)</strong>
                     <table class="data-table" style="margin-top: 5px;">
                         <tr><td>Promedio Diurno:</td><td>{r_diurno:.1f} dBA</td></tr>
-                        <tr><td style="color: #8e44ad;">Pico Máx. Diurno (LAFmax):</td><td style="color: #8e44ad;">{pico_r_diurno:.1f} dBA</td></tr>
+                        <tr><td style="color: #8e44ad;">Pico Máx. Diurno (LAFmax):</td><td style="color: #8e44ad;">{pico_r_diurno:.1f} dBA ({hr_r_diurno} hs)</td></tr>
                         <tr><td>Promedio Nocturno:</td><td>{r_nocturno:.1f} dBA</td></tr>
-                        <tr><td style="color: #8e44ad;">Pico Máx. Nocturno (LAFmax):</td><td style="color: #8e44ad;">{pico_r_nocturno:.1f} dBA</td></tr>
+                        <tr><td style="color: #8e44ad;">Pico Máx. Nocturno (LAFmax):</td><td style="color: #8e44ad;">{pico_r_nocturno:.1f} dBA ({hr_r_nocturno} hs)</td></tr>
                         <tr><td>Exposición al ruido de fondo (>45 dBA):</td><td style="color: {'#e67e22' if pct_fuera_norma > 50 else '#34495e'};"><strong>{pct_fuera_norma:.1f}%</strong> del día</td></tr>
                     </table>
                 </div>
@@ -352,9 +358,9 @@ def generar_pdf(df, uptime_pct, ruta_salida="informe_semanal_ucin.pdf"):
                     <strong>Análisis Lumínico</strong>
                     <table class="data-table" style="margin-top: 5px;">
                         <tr><td>Promedio Diurno:</td><td>{l_diurna:.0f} Lux</td></tr>
-                        <tr><td style="color: #d68910;">Pico Máx. Diurno:</td><td style="color: #d68910;">{pico_l_diurna:.0f} Lux</td></tr>
+                        <tr><td style="color: #d68910;">Pico Máx. Diurno:</td><td style="color: #d68910;">{pico_l_diurna:.0f} Lux ({hr_l_diurna} hs)</td></tr>
                         <tr><td>Promedio Nocturno:</td><td>{l_nocturna:.0f} Lux</td></tr>
-                        <tr><td style="color: #d68910;">Pico Máx. Nocturno:</td><td style="color: #d68910;">{pico_l_nocturna:.0f} Lux</td></tr>
+                        <tr><td style="color: #d68910;">Pico Máx. Nocturno:</td><td style="color: #d68910;">{pico_l_nocturna:.0f} Lux ({hr_l_nocturna} hs)</td></tr>
                     </table>
                 </div>
             </div>
