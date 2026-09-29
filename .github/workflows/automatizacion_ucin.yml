@@ -1,16 +1,12 @@
 name: Generar Informe Semanal UCIN
 
-# Cuándo se ejecuta
 on:
   schedule:
-    # GitHub usa hora UTC. Para que corra a las 8:00 del lunes en Córdoba (UTC-3), 
-    # lo programamos para las 11:00 UTC del lunes.
-    - cron: '0 11 * * 1'
+    # 11:17 UTC = 08:17 AM Córdoba (UTC-3).
+    - cron: '17 11 * * 1'
   
-  # Habilita un botón para que puedas ejecutarlo a mano cuando quieras probarlo
   workflow_dispatch:
 
-# Qué tiene que hacer
 jobs:
   generar-y-enviar:
     runs-on: ubuntu-latest
@@ -34,7 +30,6 @@ jobs:
 
       - name: Ejecutar script y enviar PDF por correo
         env:
-          # Inyección segura de tus secretos
           INFLUX_TOKEN: ${{ secrets.INFLUX_TOKEN }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python informe.py
