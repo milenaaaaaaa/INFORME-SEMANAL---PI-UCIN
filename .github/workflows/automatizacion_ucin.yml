@@ -2,14 +2,14 @@ name: Generar Informe Semanal UCIN
 
 on:
   schedule:
-    # 11:17 UTC = 08:17 AM Córdoba (UTC-3).
+    # 11:17 UTC = 08:17 AM Córdoba (evita el minuto 00)
     - cron: '17 11 * * 1'
-  
   workflow_dispatch:
 
 jobs:
   generar-y-enviar:
-    runs-on: ubuntu-latest
+    # Se fija la versión de Ubuntu para evitar fallos por migraciones automáticas
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Descargar el repositorio
